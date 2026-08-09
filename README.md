@@ -28,4 +28,4 @@ You can play against OMO [here](https://lichess.org/@/omo-engine)
 
 ## Author
 
-Created by **kieraesque**.
+Made with ❤️ by **mintykiera**
