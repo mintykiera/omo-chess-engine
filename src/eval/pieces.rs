@@ -19,25 +19,21 @@ pub fn evaluate_pieces(board: &Board, color: Color) -> i32 {
         };
 
         if is_outpost {
-            let mut protected = false;
-            for p in our_pawns {
-                let p_rank = p.rank() as i8;
-                let p_file = p.file() as i8;
-                let sq_rank = sq.rank() as i8;
-                let sq_file = sq.file() as i8;
-
-                let rank_diff = sq_rank - p_rank;
-                let file_diff = (sq_file - p_file).abs();
-
-                if file_diff == 1 {
-                    if color == Color::White && rank_diff == 1 {
-                        protected = true;
-                    } else if color == Color::Black && rank_diff == -1 {
-                        protected = true;
-                    }
+            let sq_bb = sq.bitboard();
+            let pawn_protectors = match color {
+                Color::White => {
+                    let a = (sq_bb.0 >> 9) & 0x7f7f7f7f7f7f7f7f; // not FILE_H (since shift right 9 wraps if it was A) - wait, shift right 9 from B to H, wait...
+                    let b = (sq_bb.0 >> 7) & 0xfefefefefefefefe; // not FILE_A
+                    cozy_chess::BitBoard(a | b)
                 }
-            }
-            if protected {
+                Color::Black => {
+                    let a = (sq_bb.0 << 9) & 0xfefefefefefefefe; // not FILE_A
+                    let b = (sq_bb.0 << 7) & 0x7f7f7f7f7f7f7f7f; // not FILE_H
+                    cozy_chess::BitBoard(a | b)
+                }
+            };
+
+            if !(pawn_protectors & our_pawns).is_empty() {
                 score += 20;
             }
         }

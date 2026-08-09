@@ -147,10 +147,16 @@ impl TranspositionTable {
         let idx = self.index(hash);
         let entry = &self.table[idx];
 
-        let d1 = entry.data1.load(Ordering::Relaxed);
-        let d2 = entry.data2.load(Ordering::Relaxed);
+        let hash_pre = entry.data1.load(Ordering::Acquire);
+        if hash_pre != hash {
+            return None;
+        }
 
-        if (d1 ^ d2) == hash {
+        let d2 = entry.data2.load(Ordering::Acquire);
+
+        let hash_post = entry.data1.load(Ordering::Acquire);
+
+        if hash_post == hash {
             let (score, depth, best_move, node_type, age) = unpack_data2(d2);
             Some(TTEntry {
                 hash,
@@ -177,10 +183,10 @@ impl TranspositionTable {
         let entry = &self.table[idx];
         let current_age = self.age.load(Ordering::Relaxed);
 
-        let d1_old = entry.data1.load(Ordering::Relaxed);
-        let d2_old = entry.data2.load(Ordering::Relaxed);
+        let hash_old = entry.data1.load(Ordering::Acquire);
+        let d2_old = entry.data2.load(Ordering::Acquire);
 
-        let dominated = if (d1_old ^ d2_old) == hash {
+        let dominated = if hash_old == hash {
             let (_, old_depth, _, _, old_age) = unpack_data2(d2_old);
             old_age != (current_age & 0x3f) || old_depth <= depth
         } else {
@@ -189,10 +195,10 @@ impl TranspositionTable {
 
         if dominated {
             let d2 = pack_data2(score, depth, best_move, node_type, current_age);
-            let d1 = hash ^ d2;
 
-            entry.data2.store(d2, Ordering::Relaxed);
-            entry.data1.store(d1, Ordering::Relaxed);
+            entry.data1.store(0, Ordering::Release);
+            entry.data2.store(d2, Ordering::Release);
+            entry.data1.store(hash, Ordering::Release);
         }
     }
 
@@ -225,14 +231,13 @@ impl TranspositionTable {
                 let d1 = u64::from_le_bytes(buf1);
                 let d2 = u64::from_le_bytes(buf2);
 
-                let actual_hash = d1 ^ d2;
+                let actual_hash = d1;
                 if actual_hash != 0 {
                     let (score, depth, mv, nt, _age) = unpack_data2(d2);
                     let new_d2 = pack_data2(score, depth, mv, nt, 0);
-                    let new_d1 = actual_hash ^ new_d2;
 
                     entry.data2.store(new_d2, Ordering::Relaxed);
-                    entry.data1.store(new_d1, Ordering::Relaxed);
+                    entry.data1.store(actual_hash, Ordering::Relaxed);
                 } else {
                     entry.data2.store(0, Ordering::Relaxed);
                     entry.data1.store(0, Ordering::Relaxed);

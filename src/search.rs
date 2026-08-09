@@ -7,6 +7,7 @@ use cozy_chess::{
     get_knight_moves,
     get_bishop_moves,
     get_rook_moves,
+    get_king_moves,
     BitBoard,
 };
 use std::sync::Arc;
@@ -29,6 +30,38 @@ fn score_to_tt(score: i32, ply: i32) -> i32 {
         score - ply
     } else {
         score
+    }
+}
+
+struct MoveStack {
+    moves: [Move; 256],
+    len: usize,
+}
+
+impl MoveStack {
+    fn new() -> Self {
+        Self {
+            moves: [Move { from: Square::A1, to: Square::A1, promotion: None }; 256],
+            len: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, m: Move) {
+        if self.len < 256 {
+            self.moves[self.len] = m;
+            self.len += 1;
+        }
+    }
+
+    #[inline(always)]
+    fn as_mut_slice(&mut self) -> &mut [Move] {
+        &mut self.moves[..self.len]
+    }
+
+    #[inline(always)]
+    fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 
@@ -130,7 +163,7 @@ impl SearchInfo {
 
     #[inline]
     pub fn check_time(&mut self) {
-        if (self.nodes & 127) == 0 {
+        if (self.nodes & 4095) == 0 {
             if self.stop_flag.load(Ordering::Relaxed) {
                 self.aborted = true;
                 return;
@@ -182,61 +215,54 @@ fn get_least_valuable_attacker(
     occupied: BitBoard
 ) -> Option<(Piece, Square)> {
     let friendly = board.colors(color) & occupied;
+    let sq_bb = sq.bitboard();
 
-    let pawns = board.pieces(Piece::Pawn) & friendly;
-    for p in pawns {
-        let p_rank = p.rank() as i8;
-        let p_file = p.file() as i8;
-        let sq_rank = sq.rank() as i8;
-        let sq_file = sq.file() as i8;
-        if (sq_file - p_file).abs() == 1 {
-            if
-                (color == Color::White && sq_rank - p_rank == 1) ||
-                (color == Color::Black && sq_rank - p_rank == -1)
-            {
-                return Some((Piece::Pawn, p));
-            }
+    let pawn_attackers = match color {
+        Color::White => {
+            let a = (sq_bb.0 >> 9) & 0x7f7f7f7f7f7f7f7f;
+            let b = (sq_bb.0 >> 7) & 0xfefefefefefefefe;
+            cozy_chess::BitBoard(a | b)
         }
+        Color::Black => {
+            let a = (sq_bb.0 << 9) & 0xfefefefefefefefe;
+            let b = (sq_bb.0 << 7) & 0x7f7f7f7f7f7f7f7f;
+            cozy_chess::BitBoard(a | b)
+        }
+    };
+
+    let pawns = pawn_attackers & board.pieces(Piece::Pawn) & friendly;
+    if let Some(p) = pawns.into_iter().next() {
+        return Some((Piece::Pawn, p));
     }
 
-    let knights = board.pieces(Piece::Knight) & friendly;
-    for p in knights {
-        if get_knight_moves(p).has(sq) {
-            return Some((Piece::Knight, p));
-        }
+    let knights = get_knight_moves(sq) & board.pieces(Piece::Knight) & friendly;
+    if let Some(p) = knights.into_iter().next() {
+        return Some((Piece::Knight, p));
     }
 
-    let bishops = board.pieces(Piece::Bishop) & friendly;
-    for p in bishops {
-        if get_bishop_moves(p, occupied).has(sq) {
-            return Some((Piece::Bishop, p));
-        }
+    let bishops = get_bishop_moves(sq, occupied) & board.pieces(Piece::Bishop) & friendly;
+    if let Some(p) = bishops.into_iter().next() {
+        return Some((Piece::Bishop, p));
     }
 
-    let rooks = board.pieces(Piece::Rook) & friendly;
-    for p in rooks {
-        if get_rook_moves(p, occupied).has(sq) {
-            return Some((Piece::Rook, p));
-        }
+    let rooks = get_rook_moves(sq, occupied) & board.pieces(Piece::Rook) & friendly;
+    if let Some(p) = rooks.into_iter().next() {
+        return Some((Piece::Rook, p));
     }
 
-    let queens = board.pieces(Piece::Queen) & friendly;
-    for p in queens {
-        if get_bishop_moves(p, occupied).has(sq) || get_rook_moves(p, occupied).has(sq) {
-            return Some((Piece::Queen, p));
-        }
+    let queens =
+        (get_bishop_moves(sq, occupied) | get_rook_moves(sq, occupied)) &
+        board.pieces(Piece::Queen) &
+        friendly;
+    if let Some(p) = queens.into_iter().next() {
+        return Some((Piece::Queen, p));
     }
 
-    let kings = board.pieces(Piece::King) & friendly;
-    for p in kings {
-        let p_rank = p.rank() as i8;
-        let p_file = p.file() as i8;
-        let sq_rank = sq.rank() as i8;
-        let sq_file = sq.file() as i8;
-        if (p_rank - sq_rank).abs() <= 1 && (p_file - sq_file).abs() <= 1 {
-            return Some((Piece::King, p));
-        }
+    let kings = get_king_moves(sq) & board.pieces(Piece::King) & friendly;
+    if let Some(p) = kings.into_iter().next() {
+        return Some((Piece::King, p));
     }
+
     None
 }
 
@@ -448,7 +474,8 @@ pub fn get_best_move(
         if !info.is_pondering.load(Ordering::Relaxed) {
             let current_limit = Duration::from_millis(info.time_limit_ms.load(Ordering::Relaxed));
             let effective_limit = if current_limit.is_zero() { time_limit } else { current_limit };
-            if info.start_time.elapsed() >= effective_limit / 2 {
+            let soft_limit = (effective_limit * 6) / 10;
+            if info.start_time.elapsed() >= soft_limit {
                 break;
             }
         }
@@ -484,15 +511,27 @@ fn negamax(
     info.nodes += 1;
 
     let hash = board.hash();
-    if ply > 0 && history_hashes.contains(&hash) {
-        return (0, None);
+    if ply > 0 {
+        let hc = board.halfmove_clock() as usize;
+        let scan_limit = hc.min(history_hashes.len());
+        let start_idx = history_hashes.len() - scan_limit;
+
+        let mut is_repetition = false;
+        for i in (start_idx..history_hashes.len()).rev().step_by(2) {
+            if history_hashes[i] == hash {
+                is_repetition = true;
+                break;
+            }
+        }
+
+        if is_repetition {
+            return (0, None);
+        }
     }
 
     let original_alpha = alpha;
-    let mut tt_move: Option<Move> = None;
 
     if let Some(entry) = tt.get(hash) {
-        tt_move = entry.best_move;
         if entry.depth >= depth {
             let score = score_from_tt(entry.score, ply);
             match entry.node_type {
@@ -561,35 +600,38 @@ fn negamax(
         }
     }
 
-    let mut moves = Vec::new();
+    let mut move_stack = MoveStack::new();
     board.generate_moves(|move_list| {
-        moves.extend(move_list);
+        for m in move_list {
+            move_stack.push(m);
+        }
         false
     });
 
-    if moves.is_empty() {
-        return if !board.checkers().is_empty() { (-MATE_SCORE + ply, None) } else { (0, None) };
+    if move_stack.is_empty() {
+        if in_check {
+            return (-MATE_SCORE + (ply as i32), None);
+        } else {
+            return (0, None);
+        }
     }
 
+    let tt_move = tt.get(hash).and_then(|e| e.best_move);
     let ply_idx = ply as usize;
-    {
-        let killers = &info.killers;
-        let history = &info.history;
-        let cont_history = &info.cont_history;
-        moves.sort_by_key(|m| {
-            -score_move(
-                board,
-                m,
-                tt_move,
-                ply_idx,
-                killers,
-                history,
-                cont_history,
-                prev_move,
-                params
-            )
-        });
-    }
+    let moves = move_stack.as_mut_slice();
+    moves.sort_by_cached_key(|m| {
+        -score_move(
+            board,
+            m,
+            tt_move,
+            ply_idx,
+            &info.killers,
+            &info.history,
+            &info.cont_history,
+            prev_move,
+            params
+        )
+    });
 
     let mut best_move: Option<Move> = None;
     let mut best_score = -MATE_SCORE;
@@ -738,20 +780,21 @@ fn quiescence_search(
         }
     }
 
-    let mut moves = Vec::new();
+    let mut move_stack = MoveStack::new();
     board.generate_moves(|move_list| {
         for m in move_list {
             if in_check || board.color_on(m.to).is_some() || m.promotion.is_some() {
-                moves.push(m);
+                move_stack.push(m);
             }
         }
         false
     });
 
-    if in_check && moves.is_empty() {
+    if in_check && move_stack.is_empty() {
         return -MATE_SCORE;
     }
 
+    let moves = move_stack.as_mut_slice();
     moves.sort_by_key(|m| {
         let victim_val = board
             .piece_on(m.to)
@@ -762,7 +805,7 @@ fn quiescence_search(
     });
 
     const DELTA_MARGIN: i32 = 200;
-    for m in &moves {
+    for m in moves.iter() {
         if !in_check {
             let victim_val = board
                 .piece_on(m.to)

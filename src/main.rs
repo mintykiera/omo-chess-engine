@@ -10,6 +10,18 @@ use std::sync::{ Arc, Mutex };
 use std::thread;
 use std::time::{ Duration, Instant };
 
+use std::path::PathBuf;
+
+fn get_memory_path() -> PathBuf {
+    if let Ok(mut path) = std::env::current_exe() {
+        path.pop();
+        path.push("omo_memory.bin");
+        path
+    } else {
+        PathBuf::from("omo_memory.bin")
+    }
+}
+
 fn parse_uci_move(board: &Board, m_str: &str) -> Option<Move> {
     let mut m = m_str.parse::<Move>().ok()?;
     if board.piece_on(m.from) == Some(Piece::King) {
@@ -142,8 +154,9 @@ fn main() {
     let mut num_threads = 1;
     let mut game_history: Vec<u64> = Vec::new();
 
-    if std::path::Path::new("omo_memory.bin").exists() {
-        if tt.load_from_file("omo_memory.bin").is_ok() {
+    let mem_path = get_memory_path();
+    if mem_path.exists() {
+        if tt.load_from_file(mem_path.to_str().unwrap()).is_ok() {
             println!("info string Transposition table memory restored from disk");
         }
     }
@@ -247,10 +260,7 @@ fn main() {
                 });
 
                 if root_moves.len() == 1 {
-                    println!(
-                        "bestmove {}",
-                        format_uci_move(&board_snapshot, root_moves[0])
-                    );
+                    println!("bestmove {}", format_uci_move(&board_snapshot, root_moves[0]));
                     continue;
                 }
 
@@ -455,13 +465,15 @@ fn main() {
                 tuner::tune(tokens[1]);
             }
             "savememory" => {
-                if tt.save_to_file("omo_memory.bin").is_ok() {
+                let mem_path = get_memory_path();
+                if tt.save_to_file(mem_path.to_str().unwrap()).is_ok() {
                     println!("info string Transposition table saved to disk");
                 }
             }
             "quit" => {
                 handle.stop_and_join();
-                let _ = tt.save_to_file("omo_memory.bin");
+                let mem_path = get_memory_path();
+                let _ = tt.save_to_file(mem_path.to_str().unwrap());
                 break;
             }
             _ => {}
