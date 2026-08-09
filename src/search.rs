@@ -1,9 +1,19 @@
-use cozy_chess::{ Board, Move, Piece, Square };
+use cozy_chess::{
+    Board,
+    Move,
+    Piece,
+    Square,
+    Color,
+    get_knight_moves,
+    get_bishop_moves,
+    get_rook_moves,
+    BitBoard,
+};
 use std::sync::Arc;
 use std::sync::atomic::{ AtomicBool, AtomicU64, Ordering };
 use std::time::{ Duration, Instant };
 
-use crate::eval::{evaluate_board, piece_value, EvalParams};
+use crate::eval::{ evaluate_board, piece_value, EvalParams };
 use crate::transposition::{ NodeType, TranspositionTable };
 
 const MAX_DEPTH: i32 = 64;
@@ -96,7 +106,12 @@ impl SearchInfo {
         is_pondering: Arc<AtomicBool>,
         time_limit_ms: Arc<AtomicU64>
     ) -> Self {
-        let deadline = Some(Instant::now() + time_limit.saturating_sub(Duration::from_millis(15)));
+        let safe_limit = if time_limit > Duration::from_millis(25) {
+            time_limit - Duration::from_millis(15)
+        } else {
+            (time_limit * 8) / 10
+        };
+        let deadline = Some(Instant::now() + safe_limit);
         Self {
             start_time: Instant::now(),
             time_limit,
@@ -125,7 +140,12 @@ impl SearchInfo {
 
             if !currently_pondering && self.was_pondering {
                 self.start_time = Instant::now();
-                self.deadline = Some(self.start_time + self.time_limit.saturating_sub(Duration::from_millis(15)));
+                let sl = if self.time_limit > Duration::from_millis(25) {
+                    self.time_limit - Duration::from_millis(15)
+                } else {
+                    (self.time_limit * 8) / 10
+                };
+                self.deadline = Some(self.start_time + sl);
                 self.was_pondering = false;
             }
 
@@ -155,46 +175,100 @@ fn lmr_reduction(depth: i32, move_index: i32) -> i32 {
     (0.75 + (d.ln() * m.ln()) / 2.25) as i32
 }
 
-fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
-    let mut current_board = board.clone();
-    let mut gains = Vec::new();
+fn get_least_valuable_attacker(
+    board: &Board,
+    sq: Square,
+    color: Color,
+    occupied: BitBoard
+) -> Option<(Piece, Square)> {
+    let friendly = board.colors(color) & occupied;
 
-    let victim = current_board.piece_on(m.to).map(|p| piece_value(p, params)).unwrap_or(0);
-    let promo = m.promotion.map(|p| piece_value(p, params) - piece_value(Piece::Pawn, params)).unwrap_or(0);
+    let pawns = board.pieces(Piece::Pawn) & friendly;
+    for p in pawns {
+        let p_rank = p.rank() as i8;
+        let p_file = p.file() as i8;
+        let sq_rank = sq.rank() as i8;
+        let sq_file = sq.file() as i8;
+        if (sq_file - p_file).abs() == 1 {
+            if
+                (color == Color::White && sq_rank - p_rank == 1) ||
+                (color == Color::Black && sq_rank - p_rank == -1)
+            {
+                return Some((Piece::Pawn, p));
+            }
+        }
+    }
+
+    let knights = board.pieces(Piece::Knight) & friendly;
+    for p in knights {
+        if get_knight_moves(p).has(sq) {
+            return Some((Piece::Knight, p));
+        }
+    }
+
+    let bishops = board.pieces(Piece::Bishop) & friendly;
+    for p in bishops {
+        if get_bishop_moves(p, occupied).has(sq) {
+            return Some((Piece::Bishop, p));
+        }
+    }
+
+    let rooks = board.pieces(Piece::Rook) & friendly;
+    for p in rooks {
+        if get_rook_moves(p, occupied).has(sq) {
+            return Some((Piece::Rook, p));
+        }
+    }
+
+    let queens = board.pieces(Piece::Queen) & friendly;
+    for p in queens {
+        if get_bishop_moves(p, occupied).has(sq) || get_rook_moves(p, occupied).has(sq) {
+            return Some((Piece::Queen, p));
+        }
+    }
+
+    let kings = board.pieces(Piece::King) & friendly;
+    for p in kings {
+        let p_rank = p.rank() as i8;
+        let p_file = p.file() as i8;
+        let sq_rank = sq.rank() as i8;
+        let sq_file = sq.file() as i8;
+        if (p_rank - sq_rank).abs() <= 1 && (p_file - sq_file).abs() <= 1 {
+            return Some((Piece::King, p));
+        }
+    }
+    None
+}
+
+fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
+    let mut gains = Vec::with_capacity(32);
+
+    let victim = board
+        .piece_on(m.to)
+        .map(|p| piece_value(p, params))
+        .unwrap_or(0);
+    let promo = m.promotion
+        .map(|p| piece_value(p, params) - piece_value(Piece::Pawn, params))
+        .unwrap_or(0);
     gains.push(victim + promo);
-    
-    let mut attacker = current_board.piece_on(m.from).unwrap();
+
+    let mut attacker = board.piece_on(m.from).unwrap();
     if m.promotion.is_some() {
         attacker = m.promotion.unwrap();
     }
-    
-    current_board.play_unchecked(m);
+
+    let mut occupied = board.occupied();
+    let mut current_color = board.side_to_move();
+    let mut attacker_sq = m.from;
 
     loop {
-        let mut next_move = None;
-        let mut min_val = 10000;
+        occupied &= !attacker_sq.bitboard();
+        current_color = !current_color;
 
-        current_board.generate_moves(|moves| {
-            for mv in moves {
-                if mv.to == m.to {
-                    let p = current_board.piece_on(mv.from).unwrap();
-                    let val = piece_value(p, params);
-                    if val < min_val {
-                        min_val = val;
-                        next_move = Some(mv);
-                    }
-                }
-            }
-            false
-        });
-
-        if let Some(mv) = next_move {
+        if let Some((p, sq)) = get_least_valuable_attacker(board, m.to, current_color, occupied) {
             gains.push(piece_value(attacker, params));
-            attacker = current_board.piece_on(mv.from).unwrap();
-            if mv.promotion.is_some() {
-                attacker = mv.promotion.unwrap();
-            }
-            current_board.play_unchecked(mv);
+            attacker = p;
+            attacker_sq = sq;
         } else {
             break;
         }
@@ -228,8 +302,14 @@ fn score_move(
             return -50_000 + see_score;
         }
 
-        let victim_val = board.piece_on(m.to).map(|p| piece_value(p, params)).unwrap_or(0);
-        let attacker_val = board.piece_on(m.from).map(|p| piece_value(p, params)).unwrap_or(100);
+        let victim_val = board
+            .piece_on(m.to)
+            .map(|p| piece_value(p, params))
+            .unwrap_or(0);
+        let attacker_val = board
+            .piece_on(m.from)
+            .map(|p| piece_value(p, params))
+            .unwrap_or(100);
         return 100_000 + victim_val * 10 - attacker_val;
     }
 
@@ -281,7 +361,7 @@ pub fn get_best_move(
     let mut best_score = 0i32;
     let mut total_nodes: u64 = 0;
 
-    let start_depth = if thread_id > 0 { (thread_id % 2) as i32 + 1 } else { 1 };
+    let start_depth = if thread_id > 0 { ((thread_id % 2) as i32) + 1 } else { 1 };
     for depth in start_depth..=MAX_DEPTH {
         info.nodes = 0;
 
@@ -289,7 +369,12 @@ pub fn get_best_move(
             let current_ms = time_limit_ms.load(Ordering::Relaxed);
             if current_ms > 0 {
                 info.time_limit = Duration::from_millis(current_ms);
-                info.deadline = Some(info.start_time + info.time_limit.saturating_sub(Duration::from_millis(15)));
+                let sl = if info.time_limit > Duration::from_millis(25) {
+                    info.time_limit - Duration::from_millis(15)
+                } else {
+                    (info.time_limit * 8) / 10
+                };
+                info.deadline = Some(info.start_time + sl);
             }
             if depth > 1 {
                 let limit = info.time_limit;
@@ -304,16 +389,25 @@ pub fn get_best_move(
         let mut beta = if depth > 1 { best_score + window } else { MATE_SCORE };
 
         let (score, current_move) = loop {
-            let (score, mv) = negamax(board, depth, alpha, beta, 0, &mut info, tt, params, history_hashes, None);
+            let (score, mv) = negamax(
+                board,
+                depth,
+                alpha,
+                beta,
+                0,
+                &mut info,
+                tt,
+                params,
+                history_hashes,
+                None
+            );
 
             if info.aborted {
                 break (score, mv);
             }
 
-            if score <= alpha {
+            if score <= alpha || score >= beta {
                 alpha = (score - window).max(-MATE_SCORE);
-                window *= 2;
-            } else if score >= beta {
                 beta = (score + window).min(MATE_SCORE);
                 window *= 2;
             } else {
@@ -427,7 +521,7 @@ fn negamax(
 
     if !in_check && ply > 0 && depth <= 3 {
         let static_eval = evaluate_board(board, params);
-        if static_eval - (120 * depth) >= beta {
+        if static_eval - 120 * depth >= beta {
             return (beta, None);
         }
     }
@@ -482,7 +576,19 @@ fn negamax(
         let killers = &info.killers;
         let history = &info.history;
         let cont_history = &info.cont_history;
-        moves.sort_by_key(|m| { -score_move(board, m, tt_move, ply_idx, killers, history, cont_history, prev_move, params) });
+        moves.sort_by_key(|m| {
+            -score_move(
+                board,
+                m,
+                tt_move,
+                ply_idx,
+                killers,
+                history,
+                cont_history,
+                prev_move,
+                params
+            )
+        });
     }
 
     let mut best_move: Option<Move> = None;
@@ -498,12 +604,27 @@ fn negamax(
 
         if i == 0 {
             history_hashes.push(hash);
-            let (raw, _) = negamax(&next_board, depth - 1, -beta, -alpha, ply + 1, info, tt, params, history_hashes, Some(*m));
+            let (raw, _) = negamax(
+                &next_board,
+                depth - 1,
+                -beta,
+                -alpha,
+                ply + 1,
+                info,
+                tt,
+                params,
+                history_hashes,
+                Some(*m)
+            );
             history_hashes.pop();
             score = -raw;
         } else {
             let mut reduced_depth = depth - 1;
-            let do_lmr = i >= 3 && depth >= 3 && !is_capture && !gives_check && !in_check;
+            let is_killer =
+                ply_idx < MAX_PLY &&
+                (info.killers[ply_idx][0] == Some(*m) || info.killers[ply_idx][1] == Some(*m));
+            let do_lmr =
+                i >= 3 && depth >= 3 && !is_capture && !gives_check && !in_check && !is_killer;
             if do_lmr {
                 let r = lmr_reduction(depth, i as i32);
                 reduced_depth = (depth - 1 - r).max(1);
@@ -526,7 +647,18 @@ fn negamax(
 
             if score > alpha {
                 if do_lmr || score < beta {
-                    let (raw, _) = negamax(&next_board, depth - 1, -beta, -alpha, ply + 1, info, tt, params, history_hashes, Some(*m));
+                    let (raw, _) = negamax(
+                        &next_board,
+                        depth - 1,
+                        -beta,
+                        -alpha,
+                        ply + 1,
+                        info,
+                        tt,
+                        params,
+                        history_hashes,
+                        Some(*m)
+                    );
                     score = -raw;
                 }
             }
@@ -575,7 +707,13 @@ fn negamax(
     (best_score, best_move)
 }
 
-fn quiescence_search(board: &Board, mut alpha: i32, beta: i32, info: &mut SearchInfo, params: &EvalParams) -> i32 {
+fn quiescence_search(
+    board: &Board,
+    mut alpha: i32,
+    beta: i32,
+    info: &mut SearchInfo,
+    params: &EvalParams
+) -> i32 {
     info.check_time();
     if info.aborted {
         return 0;
@@ -583,45 +721,61 @@ fn quiescence_search(board: &Board, mut alpha: i32, beta: i32, info: &mut Search
 
     info.nodes += 1;
 
-    let stand_pat = evaluate_board(board, params);
-    if stand_pat >= beta {
-        return beta;
-    }
-    if stand_pat > alpha {
-        alpha = stand_pat;
+    let in_check = !board.checkers().is_empty();
+    let stand_pat = if in_check { -MATE_SCORE } else { evaluate_board(board, params) };
+
+    if !in_check {
+        if stand_pat >= beta {
+            return beta;
+        }
+        if stand_pat > alpha {
+            alpha = stand_pat;
+        }
+
+        const BIG_DELTA: i32 = 1000;
+        if stand_pat + BIG_DELTA < alpha {
+            return alpha;
+        }
     }
 
-    const BIG_DELTA: i32 = 1000;
-    if stand_pat + BIG_DELTA < alpha {
-        return alpha;
-    }
-
-    let mut captures = Vec::new();
+    let mut moves = Vec::new();
     board.generate_moves(|move_list| {
         for m in move_list {
-            if board.color_on(m.to).is_some() || m.promotion.is_some() {
-                captures.push(m);
+            if in_check || board.color_on(m.to).is_some() || m.promotion.is_some() {
+                moves.push(m);
             }
         }
         false
     });
 
-    captures.sort_by_key(|m| {
-        let victim_val = board.piece_on(m.to).map(|p| piece_value(p, params)).unwrap_or(0);
+    if in_check && moves.is_empty() {
+        return -MATE_SCORE;
+    }
+
+    moves.sort_by_key(|m| {
+        let victim_val = board
+            .piece_on(m.to)
+            .map(|p| piece_value(p, params))
+            .unwrap_or(0);
         let promo_val = m.promotion.map(|p| piece_value(p, params)).unwrap_or(0);
         -(victim_val + promo_val)
     });
 
     const DELTA_MARGIN: i32 = 200;
-    for m in &captures {
-        let victim_val = board.piece_on(m.to).map(|p| piece_value(p, params)).unwrap_or(0);
-        let promo_val = m.promotion.map(|p| piece_value(p, params)).unwrap_or(0);
-        if stand_pat + victim_val + promo_val + DELTA_MARGIN < alpha {
-            continue;
-        }
+    for m in &moves {
+        if !in_check {
+            let victim_val = board
+                .piece_on(m.to)
+                .map(|p| piece_value(p, params))
+                .unwrap_or(0);
+            let promo_val = m.promotion.map(|p| piece_value(p, params)).unwrap_or(0);
+            if stand_pat + victim_val + promo_val + DELTA_MARGIN < alpha {
+                continue;
+            }
 
-        if see(board, *m, params) < 0 {
-            continue;
+            if see(board, *m, params) < 0 {
+                continue;
+            }
         }
 
         let mut next_board = board.clone();

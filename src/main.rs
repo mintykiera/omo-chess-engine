@@ -4,7 +4,7 @@ mod transposition;
 mod tuner;
 
 use cozy_chess::{ Board, Color, Move, Piece };
-use std::io::{self, BufRead};
+use std::io::{ self, BufRead };
 use std::sync::atomic::{ AtomicBool, AtomicU64, Ordering };
 use std::sync::{ Arc, Mutex };
 use std::thread;
@@ -86,7 +86,7 @@ fn parse_go_time(tokens: &[&str], side: Color) -> Duration {
 
         let our_inc = parse_uci_param(tokens, inc_key).unwrap_or(0);
         let mut mtg = parse_uci_param(tokens, "movestogo").unwrap_or(30);
-        
+
         if safe_time < 2000 {
             mtg = 40;
         }
@@ -168,7 +168,10 @@ fn main() {
             "setoption" => {
                 if let Some(name_idx) = tokens.iter().position(|&r| r == "name") {
                     if let Some(value_idx) = tokens.iter().position(|&r| r == "value") {
-                        if name_idx + 1 < tokens.len() && tokens[name_idx + 1].to_lowercase() == "threads" {
+                        if
+                            name_idx + 1 < tokens.len() &&
+                            tokens[name_idx + 1].to_lowercase() == "threads"
+                        {
                             if value_idx + 1 < tokens.len() {
                                 if let Ok(t) = tokens[value_idx + 1].parse::<usize>() {
                                     num_threads = t.max(1);
@@ -237,6 +240,20 @@ fn main() {
                 let ponder = tokens.contains(&"ponder");
 
                 let board_snapshot = board.lock().unwrap().clone();
+                let mut root_moves = Vec::new();
+                board_snapshot.generate_moves(|moves| {
+                    root_moves.extend(moves);
+                    false
+                });
+
+                if root_moves.len() == 1 {
+                    println!(
+                        "bestmove {}",
+                        format_uci_move(&board_snapshot, root_moves[0])
+                    );
+                    continue;
+                }
+
                 let time_limit = parse_go_time(&tokens, board_snapshot.side_to_move());
 
                 let stop_flag = Arc::new(AtomicBool::new(false));
@@ -275,7 +292,7 @@ fn main() {
 
                             if i == 0 {
                                 sf_clone.store(true, Ordering::Relaxed);
-                                
+
                                 let final_move = best.or_else(|| {
                                     let mut fallback = None;
                                     board_clone.generate_moves(|moves| {

@@ -1,11 +1,11 @@
-use cozy_chess::{Board, Color, GameStatus};
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use cozy_chess::{ Board, Color, GameStatus };
+use std::fs::{ File, OpenOptions };
+use std::io::{ BufRead, BufReader, Write };
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{ AtomicBool, AtomicU64 };
 use std::time::Duration;
-use crate::eval::{evaluate_board, EvalParams, DEFAULT_PARAMS};
-use crate::search::{get_best_move};
+use crate::eval::{ evaluate_board, EvalParams, DEFAULT_PARAMS };
+use crate::search::{ get_best_move };
 use crate::transposition::TranspositionTable;
 use rand::Rng;
 
@@ -43,7 +43,12 @@ pub fn generate_dataset(num_games: usize, output_file: &str) {
                 GameStatus::Ongoing => {}
             }
 
-            if game_history.iter().filter(|&&h| h == board.hash()).count() >= 3 {
+            if
+                game_history
+                    .iter()
+                    .filter(|&&h| h == board.hash())
+                    .count() >= 3
+            {
                 result = 0.5;
                 break;
             }
@@ -64,7 +69,7 @@ pub fn generate_dataset(num_games: usize, output_file: &str) {
                 let stop_flag = Arc::new(AtomicBool::new(false));
                 let is_pondering = Arc::new(AtomicBool::new(false));
                 let time_limit_ms = Arc::new(AtomicU64::new(0));
-                
+
                 let mut hist_clone = game_history.clone();
                 let params = DEFAULT_PARAMS.clone();
                 let (best, _) = get_best_move(
@@ -77,9 +82,9 @@ pub fn generate_dataset(num_games: usize, output_file: &str) {
                     false,
                     0,
                     &params,
-                    &mut hist_clone,
+                    &mut hist_clone
                 );
-                
+
                 if let Some(m) = best {
                     m
                 } else {
@@ -131,7 +136,12 @@ pub fn generate_dataset(num_games: usize, output_file: &str) {
             ply += 1;
         }
 
-        println!("Game {} finished. Result: {}. Quiet positions: {}", game_idx + 1, result, quiet_positions.len());
+        println!(
+            "Game {} finished. Result: {}. Quiet positions: {}",
+            game_idx + 1,
+            result,
+            quiet_positions.len()
+        );
 
         for fen in quiet_positions {
             writeln!(file, "{} | {}", fen, result).unwrap();
@@ -140,7 +150,7 @@ pub fn generate_dataset(num_games: usize, output_file: &str) {
 }
 
 fn sigmoid(score: f64, k: f64) -> f64 {
-    1.0 / (1.0 + 10_f64.powf(-k * score / 400.0))
+    1.0 / (1.0 + (10_f64).powf((-k * score) / 400.0))
 }
 
 fn compute_error(dataset: &[(Board, f64)], params: &EvalParams, k: f64) -> f64 {
@@ -151,7 +161,7 @@ fn compute_error(dataset: &[(Board, f64)], params: &EvalParams, k: f64) -> f64 {
         let error = result - p;
         total_error += error * error;
     }
-    total_error / dataset.len() as f64
+    total_error / (dataset.len() as f64)
 }
 
 fn get_param(params: &mut EvalParams, idx: usize) -> &mut i32 {
@@ -201,19 +211,19 @@ pub fn tune(dataset_file: &str) {
     println!("Loaded {} positions", dataset.len());
 
     let mut params = DEFAULT_PARAMS.clone();
-    
+
     let mut best_k = 1.0;
     let mut best_err = compute_error(&dataset, &params, best_k);
-    
+
     for i in 1..=100 {
-        let k = i as f64 * 0.1;
+        let k = (i as f64) * 0.1;
         let err = compute_error(&dataset, &params, k);
         if err < best_err {
             best_k = k;
             best_err = err;
         }
     }
-    
+
     println!("Best K: {} (Error: {})", best_k, best_err);
 
     let mut improved = true;
@@ -227,13 +237,13 @@ pub fn tune(dataset_file: &str) {
 
         for i in 0..num_params {
             let original = *get_param(&mut params, i);
-            
+
             *get_param(&mut params, i) = original + 1;
             let err_up = compute_error(&dataset, &params, best_k);
-            
+
             *get_param(&mut params, i) = original - 1;
             let err_down = compute_error(&dataset, &params, best_k);
-            
+
             if err_up < best_err && err_up < err_down {
                 *get_param(&mut params, i) = original + 1;
                 best_err = err_up;

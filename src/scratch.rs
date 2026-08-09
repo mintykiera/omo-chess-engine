@@ -1,4 +1,4 @@
-use cozy_chess::{Board, Square, BitBoard, get_knight_moves, get_bishop_attacks, get_rook_attacks};
+use cozy_chess::{ Board, Square, BitBoard, get_knight_moves, get_bishop_attacks, get_rook_attacks };
 
 fn test() {
     let b = Board::default();

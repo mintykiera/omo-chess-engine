@@ -25,10 +25,10 @@ pub fn evaluate_pieces(board: &Board, color: Color) -> i32 {
                 let p_file = p.file() as i8;
                 let sq_rank = sq.rank() as i8;
                 let sq_file = sq.file() as i8;
-                
+
                 let rank_diff = sq_rank - p_rank;
                 let file_diff = (sq_file - p_file).abs();
-                
+
                 if file_diff == 1 {
                     if color == Color::White && rank_diff == 1 {
                         protected = true;
