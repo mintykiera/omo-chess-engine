@@ -1,0 +1,8 @@
+[package]
+name = "omo-engine-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cozy-chess = "0.3.4"
+rand = "0.8.5"
