@@ -1,21 +1,13 @@
 use cozy_chess::{
-    Board,
-    Move,
-    Piece,
-    Square,
-    Color,
-    get_knight_moves,
-    get_bishop_moves,
-    get_rook_moves,
-    get_king_moves,
-    BitBoard,
+    BitBoard, Board, Color, Move, Piece, Square, get_bishop_moves, get_king_moves,
+    get_knight_moves, get_rook_moves,
 };
 use std::sync::Arc;
-use std::sync::atomic::{ AtomicBool, AtomicU64, Ordering };
-use std::time::{ Duration, Instant };
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
-use crate::eval::{ evaluate_board, piece_value, EvalParams };
-use crate::transposition::{ NodeType, TranspositionTable };
+use crate::eval::{EvalParams, evaluate_board, piece_value};
+use crate::transposition::{NodeType, TranspositionTable};
 
 const MAX_DEPTH: i32 = 64;
 const MATE_SCORE: i32 = 100_000;
@@ -41,7 +33,11 @@ struct MoveStack {
 impl MoveStack {
     fn new() -> Self {
         Self {
-            moves: [Move { from: Square::A1, to: Square::A1, promotion: None }; 256],
+            moves: [Move {
+                from: Square::A1,
+                to: Square::A1,
+                promotion: None,
+            }; 256],
             len: 0,
         }
     }
@@ -137,7 +133,7 @@ impl SearchInfo {
         time_limit: Duration,
         stop_flag: Arc<AtomicBool>,
         is_pondering: Arc<AtomicBool>,
-        time_limit_ms: Arc<AtomicU64>
+        time_limit_ms: Arc<AtomicU64>,
     ) -> Self {
         let safe_limit = if time_limit > Duration::from_millis(25) {
             time_limit - Duration::from_millis(15)
@@ -212,7 +208,7 @@ fn get_least_valuable_attacker(
     board: &Board,
     sq: Square,
     color: Color,
-    occupied: BitBoard
+    occupied: BitBoard,
 ) -> Option<(Piece, Square)> {
     let friendly = board.colors(color) & occupied;
     let sq_bb = sq.bitboard();
@@ -250,10 +246,9 @@ fn get_least_valuable_attacker(
         return Some((Piece::Rook, p));
     }
 
-    let queens =
-        (get_bishop_moves(sq, occupied) | get_rook_moves(sq, occupied)) &
-        board.pieces(Piece::Queen) &
-        friendly;
+    let queens = (get_bishop_moves(sq, occupied) | get_rook_moves(sq, occupied))
+        & board.pieces(Piece::Queen)
+        & friendly;
     if let Some(p) = queens.into_iter().next() {
         return Some((Piece::Queen, p));
     }
@@ -273,7 +268,8 @@ fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
         .piece_on(m.to)
         .map(|p| piece_value(p, params))
         .unwrap_or(0);
-    let promo = m.promotion
+    let promo = m
+        .promotion
         .map(|p| piece_value(p, params) - piece_value(Piece::Pawn, params))
         .unwrap_or(0);
     gains.push(victim + promo);
@@ -316,7 +312,7 @@ fn score_move(
     history: &[[i32; 64]; 64],
     cont_history: &[[i32; 64]; 64],
     prev_move: Option<Move>,
-    params: &EvalParams
+    params: &EvalParams,
 ) -> i32 {
     if Some(*m) == tt_move {
         return 1_000_000;
@@ -367,13 +363,13 @@ pub fn get_best_move(
     is_main_thread: bool,
     thread_id: usize,
     params: &EvalParams,
-    history_hashes: &mut Vec<u64>
+    history_hashes: &mut Vec<u64>,
 ) -> (Option<Move>, Option<Move>) {
     let mut info = SearchInfo::new(
         time_limit,
         stop_flag,
         is_pondering.clone(),
-        time_limit_ms.clone()
+        time_limit_ms.clone(),
     );
 
     for i in 0..64 {
@@ -387,7 +383,11 @@ pub fn get_best_move(
     let mut best_score = 0i32;
     let mut total_nodes: u64 = 0;
 
-    let start_depth = if thread_id > 0 { ((thread_id % 2) as i32) + 1 } else { 1 };
+    let start_depth = if thread_id > 0 {
+        ((thread_id % 2) as i32) + 1
+    } else {
+        1
+    };
     for depth in start_depth..=MAX_DEPTH {
         info.nodes = 0;
 
@@ -411,8 +411,16 @@ pub fn get_best_move(
         }
 
         let mut window = 25;
-        let mut alpha = if depth > 1 { best_score - window } else { -MATE_SCORE };
-        let mut beta = if depth > 1 { best_score + window } else { MATE_SCORE };
+        let mut alpha = if depth > 1 {
+            best_score - window
+        } else {
+            -MATE_SCORE
+        };
+        let mut beta = if depth > 1 {
+            best_score + window
+        } else {
+            MATE_SCORE
+        };
 
         let (score, current_move) = loop {
             let (score, mv) = negamax(
@@ -425,7 +433,7 @@ pub fn get_best_move(
                 tt,
                 params,
                 history_hashes,
-                None
+                None,
             );
 
             if info.aborted {
@@ -473,7 +481,11 @@ pub fn get_best_move(
 
         if !info.is_pondering.load(Ordering::Relaxed) {
             let current_limit = Duration::from_millis(info.time_limit_ms.load(Ordering::Relaxed));
-            let effective_limit = if current_limit.is_zero() { time_limit } else { current_limit };
+            let effective_limit = if current_limit.is_zero() {
+                time_limit
+            } else {
+                current_limit
+            };
             let soft_limit = (effective_limit * 6) / 10;
             if info.start_time.elapsed() >= soft_limit {
                 break;
@@ -501,7 +513,7 @@ fn negamax(
     tt: &TranspositionTable,
     params: &EvalParams,
     history_hashes: &mut Vec<u64>,
-    prev_move: Option<Move>
+    prev_move: Option<Move>,
 ) -> (i32, Option<Move>) {
     info.check_time();
     if info.aborted {
@@ -566,12 +578,11 @@ fn negamax(
     }
 
     if !in_check && ply > 0 && depth >= 3 {
-        let our_pieces =
-            (board.pieces(Piece::Knight) |
-                board.pieces(Piece::Bishop) |
-                board.pieces(Piece::Rook) |
-                board.pieces(Piece::Queen)) &
-            board.colors(board.side_to_move());
+        let our_pieces = (board.pieces(Piece::Knight)
+            | board.pieces(Piece::Bishop)
+            | board.pieces(Piece::Rook)
+            | board.pieces(Piece::Queen))
+            & board.colors(board.side_to_move());
         if our_pieces.len() > 0 {
             if let Some(null_board) = board.null_move() {
                 let r = if depth >= 6 { 3 } else { 2 };
@@ -586,7 +597,7 @@ fn negamax(
                     tt,
                     params,
                     history_hashes,
-                    None
+                    None,
                 );
                 history_hashes.pop();
                 if info.aborted {
@@ -629,7 +640,7 @@ fn negamax(
             &info.history,
             &info.cont_history,
             prev_move,
-            params
+            params,
         )
     });
 
@@ -656,15 +667,14 @@ fn negamax(
                 tt,
                 params,
                 history_hashes,
-                Some(*m)
+                Some(*m),
             );
             history_hashes.pop();
             score = -raw;
         } else {
             let mut reduced_depth = depth - 1;
-            let is_killer =
-                ply_idx < MAX_PLY &&
-                (info.killers[ply_idx][0] == Some(*m) || info.killers[ply_idx][1] == Some(*m));
+            let is_killer = ply_idx < MAX_PLY
+                && (info.killers[ply_idx][0] == Some(*m) || info.killers[ply_idx][1] == Some(*m));
             let do_lmr =
                 i >= 3 && depth >= 3 && !is_capture && !gives_check && !in_check && !is_killer;
             if do_lmr {
@@ -683,7 +693,7 @@ fn negamax(
                 tt,
                 params,
                 history_hashes,
-                Some(*m)
+                Some(*m),
             );
             score = -raw;
 
@@ -699,7 +709,7 @@ fn negamax(
                         tt,
                         params,
                         history_hashes,
-                        Some(*m)
+                        Some(*m),
                     );
                     score = -raw;
                 }
@@ -744,7 +754,13 @@ fn negamax(
     } else {
         NodeType::Exact
     };
-    tt.insert(hash, depth, score_to_tt(best_score, ply), node_type, best_move);
+    tt.insert(
+        hash,
+        depth,
+        score_to_tt(best_score, ply),
+        node_type,
+        best_move,
+    );
 
     (best_score, best_move)
 }
@@ -754,7 +770,7 @@ fn quiescence_search(
     mut alpha: i32,
     beta: i32,
     info: &mut SearchInfo,
-    params: &EvalParams
+    params: &EvalParams,
 ) -> i32 {
     info.check_time();
     if info.aborted {
@@ -764,7 +780,11 @@ fn quiescence_search(
     info.nodes += 1;
 
     let in_check = !board.checkers().is_empty();
-    let stand_pat = if in_check { -MATE_SCORE } else { evaluate_board(board, params) };
+    let stand_pat = if in_check {
+        -MATE_SCORE
+    } else {
+        evaluate_board(board, params)
+    };
 
     if !in_check {
         if stand_pat >= beta {

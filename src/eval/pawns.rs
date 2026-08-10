@@ -1,4 +1,4 @@
-use cozy_chess::{ Board, Color, Piece, BitBoard };
+use cozy_chess::{BitBoard, Board, Color, Piece};
 
 const FILE_MASKS: [BitBoard; 8] = [
     BitBoard(0x0101010101010101),
@@ -109,7 +109,11 @@ pub fn evaluate_pawns(board: &Board, color: Color) -> i32 {
         };
 
         if (their_pawns & passed_mask).is_empty() {
-            let advancement = if color == Color::White { rank } else { 7 - rank };
+            let advancement = if color == Color::White {
+                rank
+            } else {
+                7 - rank
+            };
             score += 10 * (advancement as i32);
         }
     }

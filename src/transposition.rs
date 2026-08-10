@@ -1,7 +1,7 @@
-use cozy_chess::{ Move, Square, Piece };
+use cozy_chess::{Move, Piece, Square};
 use std::fs::File;
-use std::io::{ BufReader, BufWriter, Read, Write, Result as IoResult };
-use std::sync::atomic::{ AtomicU64, AtomicU8, Ordering };
+use std::io::{BufReader, BufWriter, Read, Result as IoResult, Write};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum NodeType {
@@ -79,7 +79,11 @@ fn unpack_move(data: u16) -> Option<Move> {
         4 => Some(Piece::Queen),
         _ => None,
     };
-    Some(Move { from, to, promotion: promo })
+    Some(Move {
+        from,
+        to,
+        promotion: promo,
+    })
 }
 
 fn pack_data2(score: i32, depth: i32, mv: Option<Move>, node_type: NodeType, age: u8) -> u64 {
@@ -177,7 +181,7 @@ impl TranspositionTable {
         depth: i32,
         score: i32,
         node_type: NodeType,
-        best_move: Option<Move>
+        best_move: Option<Move>,
     ) {
         let idx = self.index(hash);
         let entry = &self.table[idx];

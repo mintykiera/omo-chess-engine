@@ -3,12 +3,12 @@ mod search;
 mod transposition;
 mod tuner;
 
-use cozy_chess::{ Board, Color, Move, Piece };
-use std::io::{ self, BufRead };
-use std::sync::atomic::{ AtomicBool, AtomicU64, Ordering };
-use std::sync::{ Arc, Mutex };
+use cozy_chess::{Board, Color, Move, Piece};
+use std::io::{self, BufRead};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{ Duration, Instant };
+use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
@@ -87,7 +87,11 @@ fn parse_go_time(tokens: &[&str], side: Color) -> Duration {
         return Duration::from_millis(ms);
     }
 
-    let time_key = if side == Color::White { "wtime" } else { "btime" };
+    let time_key = if side == Color::White {
+        "wtime"
+    } else {
+        "btime"
+    };
     let inc_key = if side == Color::White { "winc" } else { "binc" };
 
     if let Some(our_time) = parse_uci_param(tokens, time_key) {
@@ -181,9 +185,8 @@ fn main() {
             "setoption" => {
                 if let Some(name_idx) = tokens.iter().position(|&r| r == "name") {
                     if let Some(value_idx) = tokens.iter().position(|&r| r == "value") {
-                        if
-                            name_idx + 1 < tokens.len() &&
-                            tokens[name_idx + 1].to_lowercase() == "threads"
+                        if name_idx + 1 < tokens.len()
+                            && tokens[name_idx + 1].to_lowercase() == "threads"
                         {
                             if value_idx + 1 < tokens.len() {
                                 if let Ok(t) = tokens[value_idx + 1].parse::<usize>() {
@@ -260,7 +263,10 @@ fn main() {
                 });
 
                 if root_moves.len() == 1 {
-                    println!("bestmove {}", format_uci_move(&board_snapshot, root_moves[0]));
+                    println!(
+                        "bestmove {}",
+                        format_uci_move(&board_snapshot, root_moves[0])
+                    );
                     continue;
                 }
 
@@ -285,53 +291,50 @@ fn main() {
                     let params = crate::eval::DEFAULT_PARAMS.clone();
                     let mut history_clone = game_history.clone();
 
-                    handle.threads.push(
-                        thread::spawn(move || {
-                            let (best, ponder_mv) = search::get_best_move(
-                                &board_clone,
-                                time_limit,
-                                &tt_clone,
-                                sf_clone.clone(),
-                                ip_clone,
-                                tl_clone,
-                                i == 0,
-                                i,
-                                &params,
-                                &mut history_clone
-                            );
+                    handle.threads.push(thread::spawn(move || {
+                        let (best, ponder_mv) = search::get_best_move(
+                            &board_clone,
+                            time_limit,
+                            &tt_clone,
+                            sf_clone.clone(),
+                            ip_clone,
+                            tl_clone,
+                            i == 0,
+                            i,
+                            &params,
+                            &mut history_clone,
+                        );
 
-                            if i == 0 {
-                                sf_clone.store(true, Ordering::Relaxed);
+                        if i == 0 {
+                            sf_clone.store(true, Ordering::Relaxed);
 
-                                let final_move = best.or_else(|| {
-                                    let mut fallback = None;
-                                    board_clone.generate_moves(|moves| {
-                                        if fallback.is_none() {
-                                            fallback = moves.into_iter().next();
-                                        }
-                                        false
-                                    });
-                                    fallback
+                            let final_move = best.or_else(|| {
+                                let mut fallback = None;
+                                board_clone.generate_moves(|moves| {
+                                    if fallback.is_none() {
+                                        fallback = moves.into_iter().next();
+                                    }
+                                    false
                                 });
+                                fallback
+                            });
 
-                                let best_str = final_move.map_or("0000".to_string(), |m|
-                                    format_uci_move(&board_clone, m)
+                            let best_str = final_move
+                                .map_or("0000".to_string(), |m| format_uci_move(&board_clone, m));
+
+                            if let (Some(bm), Some(pm)) = (final_move, ponder_mv) {
+                                let mut after = board_clone.clone();
+                                after.play_unchecked(bm);
+                                println!(
+                                    "bestmove {} ponder {}",
+                                    best_str,
+                                    format_uci_move(&after, pm)
                                 );
-
-                                if let (Some(bm), Some(pm)) = (final_move, ponder_mv) {
-                                    let mut after = board_clone.clone();
-                                    after.play_unchecked(bm);
-                                    println!(
-                                        "bestmove {} ponder {}",
-                                        best_str,
-                                        format_uci_move(&after, pm)
-                                    );
-                                } else {
-                                    println!("bestmove {}", best_str);
-                                }
+                            } else {
+                                println!("bestmove {}", best_str);
                             }
-                        })
-                    );
+                        }
+                    }));
                 }
             }
             "ponderhit" => {
@@ -343,29 +346,41 @@ fn main() {
                 handle.stop_and_join();
             }
             "perft" => {
-                let depth: i32 = tokens
-                    .get(1)
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(5);
+                let depth: i32 = tokens.get(1).and_then(|s| s.parse().ok()).unwrap_or(5);
                 let b = board.lock().unwrap().clone();
                 let start = Instant::now();
                 let nodes = perft(&b, depth);
                 let elapsed = start.elapsed();
                 let ms = elapsed.as_millis().max(1);
                 let nps = ((nodes as u128) * 1000) / ms;
-                println!("perft({}) = {} nodes in {}ms ({} nps)", depth, nodes, ms, nps);
+                println!(
+                    "perft({}) = {} nodes in {}ms ({} nps)",
+                    depth, nodes, ms, nps
+                );
             }
             "perftsuite" => {
                 let positions = vec![
-                    ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 5, 4865609),
+                    (
+                        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                        5,
+                        4865609,
+                    ),
                     (
                         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
                         4,
                         4085603,
                     ),
                     ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 5, 674624),
-                    ("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 4, 422333),
-                    ("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", 4, 2103487)
+                    (
+                        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+                        4,
+                        422333,
+                    ),
+                    (
+                        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+                        4,
+                        2103487,
+                    ),
                 ];
                 let mut all_correct = true;
                 for (fen, depth, expected) in positions {
@@ -376,10 +391,7 @@ fn main() {
                     } else {
                         println!(
                             "FAIL: {} perft({}) = {} (expected {})",
-                            fen,
-                            depth,
-                            nodes,
-                            expected
+                            fen, depth, nodes, expected
                         );
                         all_correct = false;
                     }
@@ -400,12 +412,16 @@ fn main() {
                         "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
                         "h5f7",
                     ),
-                    ("M2 Discovered", "r5rk/5p1p/5R2/4B3/8/8/7P/7K w - - 0 1", "f6a6"),
+                    (
+                        "M2 Discovered",
+                        "r5rk/5p1p/5R2/4B3/8/8/7P/7K w - - 0 1",
+                        "f6a6",
+                    ),
                     ("Hanging Queen", "4k3/8/8/3q4/8/8/3R4/4K3 w - - 0 1", "d2d5"),
                     ("Knight Fork", "8/3k1q2/8/8/8/3N4/8/4K3 w - - 0 1", "d3e5"),
                     ("Rook Pin", "4k3/4q3/8/8/8/8/P7/4R1K1 w - - 0 1", "e1e7"),
                     ("Bishop Skewer", "7q/8/8/4k3/8/8/8/2B3K1 w - - 0 1", "c1b2"),
-                    ("Pawn Fork", "4k3/8/8/8/3p4/2N1R3/8/4K3 b - - 0 1", "d4e3")
+                    ("Pawn Fork", "4k3/8/8/8/3p4/2N1R3/8/4K3 b - - 0 1", "d4e3"),
                 ];
                 let mut passed = 0;
                 for (name, fen, expected) in &positions {
@@ -429,7 +445,7 @@ fn main() {
                         true,
                         0,
                         &params,
-                        &mut hist
+                        &mut hist,
                     );
 
                     if let Some(m) = best {
@@ -438,7 +454,10 @@ fn main() {
                             println!("PASS: {} -> found {} as expected", name, best_str);
                             passed += 1;
                         } else {
-                            println!("FAIL: {} -> expected {}, found {}", name, expected, best_str);
+                            println!(
+                                "FAIL: {} -> expected {}, found {}",
+                                name, expected, best_str
+                            );
                         }
                     } else {
                         println!("FAIL: {} -> found no move", name);

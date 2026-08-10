@@ -1,4 +1,4 @@
-use cozy_chess::{ Board, Color, Piece, get_knight_moves, get_bishop_moves, get_rook_moves };
+use cozy_chess::{Board, Color, Piece, get_bishop_moves, get_knight_moves, get_rook_moves};
 
 pub fn evaluate_pieces(board: &Board, color: Color) -> i32 {
     let mut score = 0;

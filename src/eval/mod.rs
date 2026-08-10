@@ -1,9 +1,9 @@
-pub mod pst;
-pub mod pawns;
 pub mod king;
+pub mod pawns;
 pub mod pieces;
+pub mod pst;
 
-use cozy_chess::{ Board, Color, Piece };
+use cozy_chess::{Board, Color, Piece};
 use pst::*;
 
 const TEMPO_BONUS: i32 = 15;
