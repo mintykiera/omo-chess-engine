@@ -3,12 +3,12 @@ pub mod pawns;
 pub mod pieces;
 pub mod pst;
 
-use cozy_chess::{Board, Color, Piece};
+use cozy_chess::{ Board, Color, Piece };
 use pst::*;
 
 const TEMPO_BONUS: i32 = 15;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct EvalParams {
     pub pawn_mg: [[i32; 8]; 8],
     pub pawn_eg: [[i32; 8]; 8],

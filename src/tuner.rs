@@ -1,23 +1,26 @@
-use crate::eval::{DEFAULT_PARAMS, EvalParams, evaluate_board};
+use crate::eval::{ DEFAULT_PARAMS, EvalParams, evaluate_board };
 use crate::search::get_best_move;
 use crate::transposition::TranspositionTable;
-use cozy_chess::{Board, Color, GameStatus};
+use cozy_chess::{ Board, Color, GameStatus };
 use rand::Rng;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{Arc, Mutex};
+use std::fs::{ File, OpenOptions };
+use std::io::{ BufRead, BufReader, Write };
+use std::sync::atomic::{ AtomicBool, AtomicU64 };
+use std::sync::{ Arc, Mutex };
 use std::thread;
 use std::time::Duration;
+use rayon::prelude::*;
 
 pub fn generate_dataset(num_games: usize, output_file: &str) {
-    let file = Arc::new(Mutex::new(
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(output_file)
-            .expect("Failed to open output file"),
-    ));
+    let file = Arc::new(
+        Mutex::new(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(output_file)
+                .expect("Failed to open output file")
+        )
+    );
 
     let tt = Arc::new(TranspositionTable::new(64));
     let num_threads = 224;
@@ -39,141 +42,149 @@ pub fn generate_dataset(num_games: usize, output_file: &str) {
             games_per_thread
         };
 
-        handles.push(thread::spawn(move || {
-            let mut rng = rand::thread_rng();
+        handles.push(
+            thread::spawn(move || {
+                let mut rng = rand::thread_rng();
 
-            for _game_idx in 0..games_to_play {
-                let mut board = Board::default();
-                let mut game_history = vec![board.hash()];
-                let mut quiet_positions = Vec::new();
+                for _game_idx in 0..games_to_play {
+                    let mut board = Board::default();
+                    let mut game_history = vec![board.hash()];
+                    let mut quiet_positions = Vec::new();
 
-                let mut result = 0.5;
-                let mut ply = 0;
-                let mut eval_history = Vec::new();
+                    let mut result = 0.5;
+                    let mut ply = 0;
+                    let mut eval_history = Vec::new();
 
-                tt_clone.new_search();
+                    tt_clone.new_search();
 
-                loop {
-                    match board.status() {
-                        GameStatus::Won => {
-                            result = if board.side_to_move() == Color::White {
-                                0.0
-                            } else {
-                                1.0
-                            };
-                            break;
-                        }
-                        GameStatus::Drawn => {
-                            result = 0.5;
-                            break;
-                        }
-                        GameStatus::Ongoing => {}
-                    }
-
-                    if game_history.iter().filter(|&&h| h == board.hash()).count() >= 3 {
-                        result = 0.5;
-                        break;
-                    }
-
-                    let mut moves = Vec::new();
-                    board.generate_moves(|move_list| {
-                        moves.extend(move_list);
-                        false
-                    });
-
-                    if moves.is_empty() {
-                        break;
-                    }
-
-                    let m = if ply < 6 {
-                        moves[rng.gen_range(0..moves.len())]
-                    } else {
-                        let stop_flag = Arc::new(AtomicBool::new(false));
-                        let is_pondering = Arc::new(AtomicBool::new(false));
-                        let time_limit_ms = Arc::new(AtomicU64::new(0));
-
-                        let mut hist_clone = game_history.clone();
-                        let params = DEFAULT_PARAMS.clone();
-                        let (best, _) = get_best_move(
-                            &board,
-                            Duration::from_millis(15),
-                            &tt_clone,
-                            stop_flag,
-                            is_pondering,
-                            time_limit_ms,
-                            false,
-                            0,
-                            &params,
-                            &mut hist_clone,
-                        );
-
-                        if let Some(m) = best {
-                            m
-                        } else {
-                            moves[rng.gen_range(0..moves.len())]
-                        }
-                    };
-
-                    if ply >= 6 {
-                        let eval = evaluate_board(&board, &DEFAULT_PARAMS);
-                        let score = if board.side_to_move() == Color::Black {
-                            -eval
-                        } else {
-                            eval
-                        };
-                        eval_history.push(score);
-
-                        if eval_history.len() >= 5 {
-                            let recent = &eval_history[eval_history.len() - 5..];
-                            if recent.iter().all(|&s| s > 1000) {
-                                result = 1.0;
+                    loop {
+                        match board.status() {
+                            GameStatus::Won => {
+                                result = if board.side_to_move() == Color::White {
+                                    0.0
+                                } else {
+                                    1.0
+                                };
                                 break;
                             }
-                            if recent.iter().all(|&s| s < -1000) {
-                                result = 0.0;
-                                break;
-                            }
-                        }
-
-                        if ply >= 40 && eval_history.len() >= 12 {
-                            let recent = &eval_history[eval_history.len() - 12..];
-                            if recent.iter().all(|&s| s.abs() <= 10) {
+                            GameStatus::Drawn => {
                                 result = 0.5;
                                 break;
                             }
+                            GameStatus::Ongoing => {}
                         }
+
+                        if
+                            game_history
+                                .iter()
+                                .filter(|&&h| h == board.hash())
+                                .count() >= 3
+                        {
+                            result = 0.5;
+                            break;
+                        }
+
+                        let mut moves = Vec::new();
+                        board.generate_moves(|move_list| {
+                            moves.extend(move_list);
+                            false
+                        });
+
+                        if moves.is_empty() {
+                            break;
+                        }
+
+                        let m = if ply < 6 {
+                            moves[rng.gen_range(0..moves.len())]
+                        } else {
+                            let stop_flag = Arc::new(AtomicBool::new(false));
+                            let is_pondering = Arc::new(AtomicBool::new(false));
+                            let time_limit_ms = Arc::new(AtomicU64::new(0));
+
+                            let mut hist_clone = game_history.clone();
+                            let params = DEFAULT_PARAMS.clone();
+                            let (best, _) = get_best_move(
+                                &board,
+                                Duration::from_millis(15),
+                                &tt_clone,
+                                stop_flag,
+                                is_pondering,
+                                time_limit_ms,
+                                false,
+                                0,
+                                &params,
+                                &mut hist_clone
+                            );
+
+                            if let Some(m) = best {
+                                m
+                            } else {
+                                moves[rng.gen_range(0..moves.len())]
+                            }
+                        };
+
+                        if ply >= 6 {
+                            let eval = evaluate_board(&board, &DEFAULT_PARAMS);
+                            let score = if board.side_to_move() == Color::Black {
+                                -eval
+                            } else {
+                                eval
+                            };
+                            eval_history.push(score);
+
+                            if eval_history.len() >= 5 {
+                                let recent = &eval_history[eval_history.len() - 5..];
+                                if recent.iter().all(|&s| s > 1000) {
+                                    result = 1.0;
+                                    break;
+                                }
+                                if recent.iter().all(|&s| s < -1000) {
+                                    result = 0.0;
+                                    break;
+                                }
+                            }
+
+                            if ply >= 40 && eval_history.len() >= 12 {
+                                let recent = &eval_history[eval_history.len() - 12..];
+                                if recent.iter().all(|&s| s.abs() <= 10) {
+                                    result = 0.5;
+                                    break;
+                                }
+                            }
+                        }
+
+                        let is_capture = board.color_on(m.to).is_some();
+                        let gives_check = {
+                            let mut next = board.clone();
+                            next.play_unchecked(m);
+                            !next.checkers().is_empty()
+                        };
+                        let in_check = !board.checkers().is_empty();
+
+                        if ply >= 16 && !in_check && !is_capture && !gives_check {
+                            let fen = format!("{}", board);
+                            quiet_positions.push(fen);
+                        }
+
+                        board.play_unchecked(m);
+                        game_history.push(board.hash());
+                        ply += 1;
                     }
 
-                    let is_capture = board.color_on(m.to).is_some();
-                    let gives_check = {
-                        let mut next = board.clone();
-                        next.play_unchecked(m);
-                        !next.checkers().is_empty()
-                    };
-                    let in_check = !board.checkers().is_empty();
-
-                    if ply >= 16 && !in_check && !is_capture && !gives_check {
-                        let fen = format!("{}", board);
-                        quiet_positions.push(fen);
+                    let current =
+                        completed_games_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed) +
+                        1;
+                    if current % 10000 == 0 {
+                        println!("Progress: {}/{} games finished.", current, num_games);
                     }
 
-                    board.play_unchecked(m);
-                    game_history.push(board.hash());
-                    ply += 1;
+                    let mut f = file_clone.lock().unwrap();
+                    for fen in quiet_positions {
+                        writeln!(f, "{} | {}", fen, result).unwrap();
+                    }
                 }
-
-                let current =
-                    completed_games_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if current % 10000 == 0 {
-                    println!("Progress: {}/{} games finished.", current, num_games);
-                }
-
-                let mut f = file_clone.lock().unwrap();
-                for fen in quiet_positions {
-                    writeln!(f, "{} | {}", fen, result).unwrap();
-                }
-            }
-        }));
+            })
+        );
     }
 
     for handle in handles {
@@ -186,13 +197,16 @@ fn sigmoid(score: f64, k: f64) -> f64 {
 }
 
 fn compute_error(dataset: &[(Board, f64)], params: &EvalParams, k: f64) -> f64 {
-    let mut total_error = 0.0;
-    for (board, result) in dataset {
-        let score = evaluate_board(board, params) as f64;
-        let p = sigmoid(score, k);
-        let error = result - p;
-        total_error += error * error;
-    }
+    let total_error: f64 = dataset
+        .par_iter()
+        .map(|(board, result)| {
+            let score = evaluate_board(board, params) as f64;
+            let p = sigmoid(score, k);
+            let error = result - p;
+            error * error
+        })
+        .sum();
+
     total_error / (dataset.len() as f64)
 }
 
@@ -224,10 +238,13 @@ fn get_param(params: &mut EvalParams, idx: usize) -> &mut i32 {
 }
 
 pub fn tune(dataset_file: &str) {
+    println!("Opening dataset: {}...", dataset_file);
     let file = File::open(dataset_file).expect("Failed to open dataset");
     let reader = BufReader::new(file);
 
     let mut dataset = Vec::new();
+    let mut count = 0;
+
     for line in reader.lines() {
         let line = line.unwrap();
         let parts: Vec<&str> = line.split(" | ").collect();
@@ -238,9 +255,14 @@ pub fn tune(dataset_file: &str) {
                 }
             }
         }
+
+        count += 1;
+        if count % 500_000 == 0 {
+            println!("Parsed {} lines into memory...", count);
+        }
     }
 
-    println!("Loaded {} positions", dataset.len());
+    println!("Finished loading {} valid positions.", dataset.len());
 
     let mut params = DEFAULT_PARAMS.clone();
 
@@ -294,5 +316,12 @@ pub fn tune(dataset_file: &str) {
             println!("Piece Values: {:?}", params.piece_values);
         }
     }
-    println!("Tuning complete!");
+
+    println!("Tuning complete! Saving parameters to file...");
+
+    let mut out_file = File::create("tuned_parameters.txt").expect("Failed to create output file");
+
+    writeln!(out_file, "{:#?}", params).expect("Failed to write params");
+
+    println!("Saved everything to tuned_parameters.txt");
 }

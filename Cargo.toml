@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 cozy-chess = "0.3.4"
 rand = "0.8.5"
+rayon = "1.10"
