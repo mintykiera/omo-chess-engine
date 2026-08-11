@@ -153,7 +153,7 @@ impl SearchHandle {
 
 fn main() {
     let board = Arc::new(Mutex::new(Board::default()));
-    let tt = Arc::new(transposition::TranspositionTable::new(64));
+    let tt = Arc::new(transposition::TranspositionTable::new(256));
     let mut handle = SearchHandle::new();
     let mut num_threads = 1;
     let mut game_history: Vec<u64> = Vec::new();

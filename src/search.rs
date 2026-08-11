@@ -6,13 +6,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::eval::{EvalParams, evaluate_board, piece_value};
+use crate::eval::{EvalParams, EvalState, evaluate_board_incremental, piece_value};
 use crate::transposition::{NodeType, TranspositionTable};
 
 const MAX_DEPTH: i32 = 64;
 const MATE_SCORE: i32 = 100_000;
 const MATE_THRESHOLD: i32 = 90_000;
 const MAX_PLY: usize = 128;
+const MAX_EXTENSIONS: i32 = 3;
 
 #[inline]
 fn score_to_tt(score: i32, ply: i32) -> i32 {
@@ -58,6 +59,75 @@ impl MoveStack {
     #[inline(always)]
     fn is_empty(&self) -> bool {
         self.len == 0
+    }
+}
+
+// Zero-allocation staged move picker. Scores all moves upfront, then
+// yields them best-first via partial selection sort — only the next-best
+// move is found on each call, so moves after a beta cutoff are never sorted.
+struct ScoredMoveList {
+    moves: [Move; 256],
+    scores: [i32; 256],
+    len: usize,
+    current: usize,
+}
+
+impl ScoredMoveList {
+    fn from_stack(
+        stack: &MoveStack,
+        board: &Board,
+        tt_move: Option<Move>,
+        ply: usize,
+        killers: &[[Option<Move>; 2]],
+        history: &[[i32; 64]; 64],
+        cont_history: &[[i32; 64]; 64],
+        prev_move: Option<Move>,
+        params: &EvalParams,
+    ) -> Self {
+        let mut result = Self {
+            moves: [Move {
+                from: Square::A1,
+                to: Square::A1,
+                promotion: None,
+            }; 256],
+            scores: [0; 256],
+            len: stack.len,
+            current: 0,
+        };
+        for i in 0..stack.len {
+            result.moves[i] = stack.moves[i];
+            result.scores[i] = score_move(
+                board,
+                &stack.moves[i],
+                tt_move,
+                ply,
+                killers,
+                history,
+                cont_history,
+                prev_move,
+                params,
+            );
+        }
+        result
+    }
+
+    /// Pick the next best move via partial selection sort.
+    #[inline]
+    fn pick_next(&mut self) -> Option<(Move, usize)> {
+        if self.current >= self.len {
+            return None;
+        }
+        let mut best_idx = self.current;
+        for i in self.current + 1..self.len {
+            if self.scores[i] > self.scores[best_idx] {
+                best_idx = i;
+            }
+        }
+        self.moves.swap(self.current, best_idx);
+        self.scores.swap(self.current, best_idx);
+        let idx = self.current;
+        self.current += 1;
+        Some((self.moves[idx], idx))
     }
 }
 
@@ -204,6 +274,7 @@ fn lmr_reduction(depth: i32, move_index: i32) -> i32 {
     (0.75 + (d.ln() * m.ln()) / 2.25) as i32
 }
 
+#[allow(dead_code)]
 fn get_least_valuable_attacker(
     board: &Board,
     sq: Square,
@@ -261,8 +332,37 @@ fn get_least_valuable_attacker(
     None
 }
 
+/// Compute all pieces of BOTH colors attacking a given square,
+/// using the provided occupied bitboard for sliding piece ray casting.
+fn all_attackers_to(board: &Board, sq: Square, occupied: BitBoard) -> BitBoard {
+    let sq_bb = sq.bitboard();
+
+    // Squares where White/Black pawns would be to attack sq
+    let w_pawn_from =
+        BitBoard(((sq_bb.0 >> 9) & 0x7f7f7f7f7f7f7f7f) | ((sq_bb.0 >> 7) & 0xfefefefefefefefe));
+    let b_pawn_from =
+        BitBoard(((sq_bb.0 << 9) & 0xfefefefefefefefe) | ((sq_bb.0 << 7) & 0x7f7f7f7f7f7f7f7f));
+
+    let pawns = ((w_pawn_from & board.colors(Color::White))
+        | (b_pawn_from & board.colors(Color::Black)))
+        & board.pieces(Piece::Pawn);
+    let knights = get_knight_moves(sq) & board.pieces(Piece::Knight);
+    let kings = get_king_moves(sq) & board.pieces(Piece::King);
+
+    let diag = get_bishop_moves(sq, occupied);
+    let orth = get_rook_moves(sq, occupied);
+    let bishops_queens = diag & (board.pieces(Piece::Bishop) | board.pieces(Piece::Queen));
+    let rooks_queens = orth & (board.pieces(Piece::Rook) | board.pieces(Piece::Queen));
+
+    (pawns | knights | kings | bishops_queens | rooks_queens) & occupied
+}
+
+/// Static Exchange Evaluation with proper X-ray discovery.
+/// Uses a stack-allocated gains array (zero heap allocation) and
+/// recalculates sliding attackers after each piece removal to unmask
+/// any pieces that were hiding behind the captured/moved piece.
 fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
-    let mut gains = Vec::with_capacity(32);
+    let mut gains = [0i32; 32];
 
     let victim = board
         .piece_on(m.to)
@@ -272,37 +372,83 @@ fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
         .promotion
         .map(|p| piece_value(p, params) - piece_value(Piece::Pawn, params))
         .unwrap_or(0);
-    gains.push(victim + promo);
+    gains[0] = victim + promo;
 
     let mut attacker = board.piece_on(m.from).unwrap();
-    if m.promotion.is_some() {
-        attacker = m.promotion.unwrap();
+    if let Some(p) = m.promotion {
+        attacker = p;
     }
 
     let mut occupied = board.occupied();
-    let mut current_color = board.side_to_move();
-    let mut attacker_sq = m.from;
+    occupied &= !m.from.bitboard();
+
+    // Compute initial attacker set with the moving piece already removed
+    let mut attackers = all_attackers_to(board, m.to, occupied);
+    let mut current_color = !board.side_to_move();
+    let mut d: usize = 0;
+
+    let piece_order = [
+        Piece::Pawn,
+        Piece::Knight,
+        Piece::Bishop,
+        Piece::Rook,
+        Piece::Queen,
+        Piece::King,
+    ];
 
     loop {
-        occupied &= !attacker_sq.bitboard();
-        current_color = !current_color;
-
-        if let Some((p, sq)) = get_least_valuable_attacker(board, m.to, current_color, occupied) {
-            gains.push(piece_value(attacker, params));
-            attacker = p;
-            attacker_sq = sq;
-        } else {
+        let color_attackers = attackers & board.colors(current_color) & occupied;
+        if color_attackers.is_empty() {
             break;
         }
+
+        // Find least valuable attacker of current_color
+        let mut found_piece = Piece::King;
+        let mut found_sq = Square::A1;
+        let mut found = false;
+        for &p in &piece_order {
+            let candidates = color_attackers & board.pieces(p);
+            if let Some(sq) = candidates.into_iter().next() {
+                found_piece = p;
+                found_sq = sq;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            break;
+        }
+
+        d += 1;
+        gains[d] = piece_value(attacker, params);
+
+        attacker = found_piece;
+        occupied &= !found_sq.bitboard();
+        attackers &= !found_sq.bitboard();
+
+        // X-ray discovery: recalculate sliding attackers with updated occupied.
+        // Any Bishop/Rook/Queen that was hidden behind the removed piece is now unmasked.
+        let diag = get_bishop_moves(m.to, occupied);
+        let orth = get_rook_moves(m.to, occupied);
+        let new_sliders = ((diag & (board.pieces(Piece::Bishop) | board.pieces(Piece::Queen)))
+            | (orth & (board.pieces(Piece::Rook) | board.pieces(Piece::Queen))))
+            & occupied;
+        attackers |= new_sliders;
+
+        current_color = !current_color;
     }
 
-    let mut score = 0;
-    for i in (1..gains.len()).rev() {
-        score = (gains[i] - score).max(0);
+    // Resolve gains with negamax (equivalent to the standard SEE resolution)
+    let mut i = d as i32;
+    while i >= 1 {
+        gains[(i as usize) - 1] -= gains[i as usize].max(0);
+        i -= 1;
     }
-    gains[0] - score
+    gains[0]
 }
 
+/// Score a move for ordering. Uses pure MVV-LVA for captures (no SEE),
+/// hash move priority, killer heuristic, and history/countermove tables.
 fn score_move(
     board: &Board,
     m: &Move,
@@ -318,12 +464,8 @@ fn score_move(
         return 1_000_000;
     }
 
+    // Pure MVV-LVA for captures — SEE is too expensive for move ordering
     if board.color_on(m.to).is_some() {
-        let see_score = see(board, *m, params);
-        if see_score < 0 {
-            return -50_000 + see_score;
-        }
-
         let victim_val = board
             .piece_on(m.to)
             .map(|p| piece_value(p, params))
@@ -382,6 +524,7 @@ pub fn get_best_move(
     let mut best_move: Option<Move> = None;
     let mut best_score = 0i32;
     let mut total_nodes: u64 = 0;
+    let eval_state = EvalState::from_board(board, params);
 
     let start_depth = if thread_id > 0 {
         ((thread_id % 2) as i32) + 1
@@ -429,26 +572,29 @@ pub fn get_best_move(
                 alpha,
                 beta,
                 0,
+                0,
                 &mut info,
                 tt,
                 params,
                 history_hashes,
                 None,
+                &eval_state,
             );
 
             if info.aborted {
                 break (score, mv);
             }
 
-            if score <= alpha || score >= beta {
+            if score <= alpha && alpha > -MATE_SCORE {
                 alpha = (score - window).max(-MATE_SCORE);
+                window = window.saturating_mul(2);
+            } else if score >= beta && beta < MATE_SCORE {
                 beta = (score + window).min(MATE_SCORE);
-                window *= 2;
+                window = window.saturating_mul(2);
             } else {
                 break (score, mv);
             }
         };
-
         total_nodes += info.nodes;
 
         if info.aborted {
@@ -509,11 +655,13 @@ fn negamax(
     mut alpha: i32,
     mut beta: i32,
     ply: i32,
+    extensions: i32,
     info: &mut SearchInfo,
     tt: &TranspositionTable,
     params: &EvalParams,
     history_hashes: &mut Vec<u64>,
     prev_move: Option<Move>,
+    eval_state: &EvalState,
 ) -> (i32, Option<Move>) {
     info.check_time();
     if info.aborted {
@@ -564,19 +712,30 @@ fn negamax(
     }
 
     if depth <= 0 {
-        return (quiescence_search(board, alpha, beta, info, params), None);
+        return (
+            quiescence_search(board, alpha, beta, info, params, eval_state),
+            None,
+        );
     }
 
     let in_check = !board.checkers().is_empty();
-    let depth = if in_check { depth + 1 } else { depth };
 
+    // Capped check extension: only extend if we haven't exceeded MAX_EXTENSIONS on this path
+    let (depth, extensions) = if in_check && extensions < MAX_EXTENSIONS {
+        (depth + 1, extensions + 1)
+    } else {
+        (depth, extensions)
+    };
+
+    // Reverse futility pruning
     if !in_check && ply > 0 && depth <= 3 {
-        let static_eval = evaluate_board(board, params);
+        let static_eval = evaluate_board_incremental(board, eval_state, params);
         if static_eval - 120 * depth >= beta {
             return (beta, None);
         }
     }
 
+    // Null move pruning
     if !in_check && ply > 0 && depth >= 3 {
         let our_pieces = (board.pieces(Piece::Knight)
             | board.pieces(Piece::Bishop)
@@ -593,11 +752,13 @@ fn negamax(
                     -beta,
                     -beta + 1,
                     ply + 1,
+                    extensions,
                     info,
                     tt,
                     params,
                     history_hashes,
                     None,
+                    eval_state,
                 );
                 history_hashes.pop();
                 if info.aborted {
@@ -629,33 +790,39 @@ fn negamax(
 
     let tt_move = tt.get(hash).and_then(|e| e.best_move);
     let ply_idx = ply as usize;
-    let moves = move_stack.as_mut_slice();
-    moves.sort_by_cached_key(|m| {
-        -score_move(
-            board,
-            m,
-            tt_move,
-            ply_idx,
-            &info.killers,
-            &info.history,
-            &info.cont_history,
-            prev_move,
-            params,
-        )
-    });
+
+    // Zero-allocation staged move picker: scores all moves, then yields
+    // best-first via selection sort (O(1) per pick, no heap allocation).
+    let mut picker = ScoredMoveList::from_stack(
+        &move_stack,
+        board,
+        tt_move,
+        ply_idx,
+        &info.killers,
+        &info.history,
+        &info.cont_history,
+        prev_move,
+        params,
+    );
 
     let mut best_move: Option<Move> = None;
     let mut best_score = -MATE_SCORE;
+    let mut move_index = 0usize;
 
-    for (i, m) in moves.iter().enumerate() {
+    while let Some((m, _)) = picker.pick_next() {
+        // Incremental eval: copy-make pattern (EvalState is 12 bytes, trivially Copy)
+        let mut child_eval = *eval_state;
+        child_eval.make_move(board, m, params);
+
         let mut next_board = board.clone();
-        next_board.play_unchecked(*m);
+        next_board.play_unchecked(m);
 
         let mut score;
         let is_capture = board.color_on(m.to).is_some();
         let gives_check = next_board.checkers().len() > 0;
 
-        if i == 0 {
+        if move_index == 0 {
+            // Full window search for PV move
             history_hashes.push(hash);
             let (raw, _) = negamax(
                 &next_board,
@@ -663,22 +830,29 @@ fn negamax(
                 -beta,
                 -alpha,
                 ply + 1,
+                extensions,
                 info,
                 tt,
                 params,
                 history_hashes,
-                Some(*m),
+                Some(m),
+                &child_eval,
             );
             history_hashes.pop();
             score = -raw;
         } else {
+            // Late Move Reductions + PVS
             let mut reduced_depth = depth - 1;
             let is_killer = ply_idx < MAX_PLY
-                && (info.killers[ply_idx][0] == Some(*m) || info.killers[ply_idx][1] == Some(*m));
-            let do_lmr =
-                i >= 3 && depth >= 3 && !is_capture && !gives_check && !in_check && !is_killer;
+                && (info.killers[ply_idx][0] == Some(m) || info.killers[ply_idx][1] == Some(m));
+            let do_lmr = move_index >= 3
+                && depth >= 3
+                && !is_capture
+                && !gives_check
+                && !in_check
+                && !is_killer;
             if do_lmr {
-                let r = lmr_reduction(depth, i as i32);
+                let r = lmr_reduction(depth, move_index as i32);
                 reduced_depth = (depth - 1 - r).max(1);
             }
 
@@ -689,11 +863,13 @@ fn negamax(
                 -alpha - 1,
                 -alpha,
                 ply + 1,
+                extensions,
                 info,
                 tt,
                 params,
                 history_hashes,
-                Some(*m),
+                Some(m),
+                &child_eval,
             );
             score = -raw;
 
@@ -705,11 +881,13 @@ fn negamax(
                         -beta,
                         -alpha,
                         ply + 1,
+                        extensions,
                         info,
                         tt,
                         params,
                         history_hashes,
-                        Some(*m),
+                        Some(m),
+                        &child_eval,
                     );
                     score = -raw;
                 }
@@ -723,7 +901,7 @@ fn negamax(
 
         if score > best_score {
             best_score = score;
-            best_move = Some(*m);
+            best_move = Some(m);
         }
         if score > alpha {
             alpha = score;
@@ -732,7 +910,7 @@ fn negamax(
             if board.color_on(m.to).is_none() {
                 if ply_idx < MAX_PLY {
                     info.killers[ply_idx][1] = info.killers[ply_idx][0];
-                    info.killers[ply_idx][0] = Some(*m);
+                    info.killers[ply_idx][0] = Some(m);
                 }
                 let bonus = depth * depth;
                 let entry = &mut info.history[sq_idx(m.from)][sq_idx(m.to)];
@@ -745,6 +923,8 @@ fn negamax(
             }
             break;
         }
+
+        move_index += 1;
     }
 
     let node_type = if best_score <= original_alpha {
@@ -771,6 +951,7 @@ fn quiescence_search(
     beta: i32,
     info: &mut SearchInfo,
     params: &EvalParams,
+    eval_state: &EvalState,
 ) -> i32 {
     info.check_time();
     if info.aborted {
@@ -783,7 +964,7 @@ fn quiescence_search(
     let stand_pat = if in_check {
         -MATE_SCORE
     } else {
-        evaluate_board(board, params)
+        evaluate_board_incremental(board, eval_state, params)
     };
 
     if !in_check {
@@ -815,7 +996,7 @@ fn quiescence_search(
     }
 
     let moves = move_stack.as_mut_slice();
-    moves.sort_by_key(|m| {
+    moves.sort_unstable_by_key(|m| {
         let victim_val = board
             .piece_on(m.to)
             .map(|p| piece_value(p, params))
@@ -836,15 +1017,19 @@ fn quiescence_search(
                 continue;
             }
 
+            // SEE pruning in qsearch — this is where expensive SEE belongs
             if see(board, *m, params) < 0 {
                 continue;
             }
         }
 
+        let mut child_eval = *eval_state;
+        child_eval.make_move(board, *m, params);
+
         let mut next_board = board.clone();
         next_board.play_unchecked(*m);
 
-        let score = -quiescence_search(&next_board, -beta, -alpha, info, params);
+        let score = -quiescence_search(&next_board, -beta, -alpha, info, params, &child_eval);
 
         if info.aborted {
             return 0;
