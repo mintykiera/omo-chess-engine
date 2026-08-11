@@ -62,9 +62,6 @@ impl MoveStack {
     }
 }
 
-// Zero-allocation staged move picker. Scores all moves upfront, then
-// yields them best-first via partial selection sort — only the next-best
-// move is found on each call, so moves after a beta cutoff are never sorted.
 struct ScoredMoveList {
     moves: [Move; 256],
     scores: [i32; 256],
@@ -111,7 +108,6 @@ impl ScoredMoveList {
         result
     }
 
-    /// Pick the next best move via partial selection sort.
     #[inline]
     fn pick_next(&mut self) -> Option<(Move, usize)> {
         if self.current >= self.len {
@@ -332,12 +328,9 @@ fn get_least_valuable_attacker(
     None
 }
 
-/// Compute all pieces of BOTH colors attacking a given square,
-/// using the provided occupied bitboard for sliding piece ray casting.
 fn all_attackers_to(board: &Board, sq: Square, occupied: BitBoard) -> BitBoard {
     let sq_bb = sq.bitboard();
 
-    // Squares where White/Black pawns would be to attack sq
     let w_pawn_from =
         BitBoard(((sq_bb.0 >> 9) & 0x7f7f7f7f7f7f7f7f) | ((sq_bb.0 >> 7) & 0xfefefefefefefefe));
     let b_pawn_from =
@@ -357,10 +350,6 @@ fn all_attackers_to(board: &Board, sq: Square, occupied: BitBoard) -> BitBoard {
     (pawns | knights | kings | bishops_queens | rooks_queens) & occupied
 }
 
-/// Static Exchange Evaluation with proper X-ray discovery.
-/// Uses a stack-allocated gains array (zero heap allocation) and
-/// recalculates sliding attackers after each piece removal to unmask
-/// any pieces that were hiding behind the captured/moved piece.
 fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
     let mut gains = [0i32; 32];
 
@@ -382,7 +371,6 @@ fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
     let mut occupied = board.occupied();
     occupied &= !m.from.bitboard();
 
-    // Compute initial attacker set with the moving piece already removed
     let mut attackers = all_attackers_to(board, m.to, occupied);
     let mut current_color = !board.side_to_move();
     let mut d: usize = 0;
@@ -402,7 +390,6 @@ fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
             break;
         }
 
-        // Find least valuable attacker of current_color
         let mut found_piece = Piece::King;
         let mut found_sq = Square::A1;
         let mut found = false;
@@ -426,8 +413,6 @@ fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
         occupied &= !found_sq.bitboard();
         attackers &= !found_sq.bitboard();
 
-        // X-ray discovery: recalculate sliding attackers with updated occupied.
-        // Any Bishop/Rook/Queen that was hidden behind the removed piece is now unmasked.
         let diag = get_bishop_moves(m.to, occupied);
         let orth = get_rook_moves(m.to, occupied);
         let new_sliders = ((diag & (board.pieces(Piece::Bishop) | board.pieces(Piece::Queen)))
@@ -438,7 +423,6 @@ fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
         current_color = !current_color;
     }
 
-    // Resolve gains with negamax (equivalent to the standard SEE resolution)
     let mut i = d as i32;
     while i >= 1 {
         gains[(i as usize) - 1] -= gains[i as usize].max(0);
@@ -447,8 +431,6 @@ fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
     gains[0]
 }
 
-/// Score a move for ordering. Uses pure MVV-LVA for captures (no SEE),
-/// hash move priority, killer heuristic, and history/countermove tables.
 fn score_move(
     board: &Board,
     m: &Move,
@@ -464,7 +446,6 @@ fn score_move(
         return 1_000_000;
     }
 
-    // Pure MVV-LVA for captures — SEE is too expensive for move ordering
     if board.color_on(m.to).is_some() {
         let victim_val = board
             .piece_on(m.to)
@@ -720,14 +701,12 @@ fn negamax(
 
     let in_check = !board.checkers().is_empty();
 
-    // Capped check extension: only extend if we haven't exceeded MAX_EXTENSIONS on this path
     let (depth, extensions) = if in_check && extensions < MAX_EXTENSIONS {
         (depth + 1, extensions + 1)
     } else {
         (depth, extensions)
     };
 
-    // Reverse futility pruning
     if !in_check && ply > 0 && depth <= 3 {
         let static_eval = evaluate_board_incremental(board, eval_state, params);
         if static_eval - 120 * depth >= beta {
@@ -735,7 +714,6 @@ fn negamax(
         }
     }
 
-    // Null move pruning
     if !in_check && ply > 0 && depth >= 3 {
         let our_pieces = (board.pieces(Piece::Knight)
             | board.pieces(Piece::Bishop)
@@ -791,8 +769,6 @@ fn negamax(
     let tt_move = tt.get(hash).and_then(|e| e.best_move);
     let ply_idx = ply as usize;
 
-    // Zero-allocation staged move picker: scores all moves, then yields
-    // best-first via selection sort (O(1) per pick, no heap allocation).
     let mut picker = ScoredMoveList::from_stack(
         &move_stack,
         board,
@@ -810,7 +786,6 @@ fn negamax(
     let mut move_index = 0usize;
 
     while let Some((m, _)) = picker.pick_next() {
-        // Incremental eval: copy-make pattern (EvalState is 12 bytes, trivially Copy)
         let mut child_eval = *eval_state;
         child_eval.make_move(board, m, params);
 
@@ -822,7 +797,6 @@ fn negamax(
         let gives_check = next_board.checkers().len() > 0;
 
         if move_index == 0 {
-            // Full window search for PV move
             history_hashes.push(hash);
             let (raw, _) = negamax(
                 &next_board,
@@ -841,7 +815,6 @@ fn negamax(
             history_hashes.pop();
             score = -raw;
         } else {
-            // Late Move Reductions + PVS
             let mut reduced_depth = depth - 1;
             let is_killer = ply_idx < MAX_PLY
                 && (info.killers[ply_idx][0] == Some(m) || info.killers[ply_idx][1] == Some(m));
@@ -1017,7 +990,6 @@ fn quiescence_search(
                 continue;
             }
 
-            // SEE pruning in qsearch — this is where expensive SEE belongs
             if see(board, *m, params) < 0 {
                 continue;
             }

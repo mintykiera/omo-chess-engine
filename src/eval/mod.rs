@@ -4,7 +4,6 @@ pub mod pieces;
 pub mod pst;
 
 use cozy_chess::{Board, Color, File, Move, Piece, Square};
-use pst::*;
 
 const TEMPO_BONUS: i32 = 15;
 
@@ -27,39 +26,11 @@ pub struct EvalParams {
 
 impl Default for EvalParams {
     fn default() -> Self {
-        Self {
-            pawn_mg: PAWN_MG_PST,
-            pawn_eg: PAWN_EG_PST,
-            knight_mg: KNIGHT_MG_PST,
-            knight_eg: KNIGHT_EG_PST,
-            bishop_mg: BISHOP_MG_PST,
-            bishop_eg: BISHOP_EG_PST,
-            rook_mg: ROOK_MG_PST,
-            rook_eg: ROOK_EG_PST,
-            queen_mg: QUEEN_MG_PST,
-            queen_eg: QUEEN_EG_PST,
-            king_mg: KING_MG_PST,
-            king_eg: KING_EG_PST,
-            piece_values: [100, 300, 320, 500, 900, 0],
-        }
+        pst::TUNED_PARAMS
     }
 }
 
-pub static DEFAULT_PARAMS: EvalParams = EvalParams {
-    pawn_mg: PAWN_MG_PST,
-    pawn_eg: PAWN_EG_PST,
-    knight_mg: KNIGHT_MG_PST,
-    knight_eg: KNIGHT_EG_PST,
-    bishop_mg: BISHOP_MG_PST,
-    bishop_eg: BISHOP_EG_PST,
-    rook_mg: ROOK_MG_PST,
-    rook_eg: ROOK_EG_PST,
-    queen_mg: QUEEN_MG_PST,
-    queen_eg: QUEEN_EG_PST,
-    king_mg: KING_MG_PST,
-    king_eg: KING_EG_PST,
-    piece_values: [100, 300, 320, 500, 900, 0],
-};
+pub use pst::TUNED_PARAMS as DEFAULT_PARAMS;
 
 pub fn piece_value(piece: Piece, params: &EvalParams) -> i32 {
     params.piece_values[piece as usize]
@@ -225,14 +196,10 @@ impl EvalState {
         }
     }
 
-    /// Update state for a move about to be played on `board`.
-    /// Must be called BEFORE board.play_unchecked(m).
     pub fn make_move(&mut self, board: &Board, m: Move, params: &EvalParams) {
         let us = board.side_to_move();
         let moving_piece = board.piece_on(m.from).unwrap();
 
-        // CRITICAL: cozy_chess encodes castling as King moving to the friendly Rook's square.
-        // Detect this and update both King and Rook PST/material without treating the Rook as captured.
         if moving_piece == Piece::King {
             if let Some(target_piece) = board.piece_on(m.to) {
                 if board.color_on(m.to) == Some(us) && target_piece == Piece::Rook {
@@ -254,8 +221,6 @@ impl EvalState {
             }
         }
 
-        // CRITICAL: En passant captures land on an empty square.
-        // Detect diagonal pawn move to empty square and remove the ghost pawn.
         let is_en_passant = moving_piece == Piece::Pawn
             && m.from.file() != m.to.file()
             && board.piece_on(m.to).is_none();
@@ -272,7 +237,6 @@ impl EvalState {
             self.remove_piece(Piece::Pawn, captured_sq, them, params);
         }
 
-        // CRITICAL: Promotions must update phase (e.g. +4 for Queen, +1 for Knight).
         if let Some(promo_piece) = m.promotion {
             self.add_piece(promo_piece, m.to, us, params);
             self.phase = (self.phase + phase_value(promo_piece)).min(24);
@@ -282,7 +246,7 @@ impl EvalState {
     }
 }
 
-pub fn evaluate_board_incremental(board: &Board, state: &EvalState, params: &EvalParams) -> i32 {
+pub fn evaluate_board_incremental(board: &Board, state: &EvalState, _params: &EvalParams) -> i32 {
     let phase = state.phase;
     let mut mg_score = state.mg;
     let mut eg_score = state.eg;

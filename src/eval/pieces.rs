@@ -22,13 +22,13 @@ pub fn evaluate_pieces(board: &Board, color: Color) -> i32 {
             let sq_bb = sq.bitboard();
             let pawn_protectors = match color {
                 Color::White => {
-                    let a = (sq_bb.0 >> 9) & 0x7f7f7f7f7f7f7f7f; // not FILE_H (since shift right 9 wraps if it was A) - wait, shift right 9 from B to H, wait...
-                    let b = (sq_bb.0 >> 7) & 0xfefefefefefefefe; // not FILE_A
+                    let a = (sq_bb.0 >> 9) & 0x7f7f7f7f7f7f7f7f;
+                    let b = (sq_bb.0 >> 7) & 0xfefefefefefefefe;
                     cozy_chess::BitBoard(a | b)
                 }
                 Color::Black => {
-                    let a = (sq_bb.0 << 9) & 0xfefefefefefefefe; // not FILE_A
-                    let b = (sq_bb.0 << 7) & 0x7f7f7f7f7f7f7f7f; // not FILE_H
+                    let a = (sq_bb.0 << 9) & 0xfefefefefefefefe;
+                    let b = (sq_bb.0 << 7) & 0x7f7f7f7f7f7f7f7f;
                     cozy_chess::BitBoard(a | b)
                 }
             };
