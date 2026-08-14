@@ -3,7 +3,7 @@ use cozy_chess::{
     get_knight_moves, get_rook_moves,
 };
 
-use crate::eval::{EvalParams, piece_value};
+use crate::eval::piece_value;
 
 #[allow(dead_code)]
 pub(crate) fn get_least_valuable_attacker(
@@ -85,16 +85,13 @@ pub(crate) fn all_attackers_to(board: &Board, sq: Square, occupied: BitBoard) ->
     (pawns | knights | kings | bishops_queens | rooks_queens) & occupied
 }
 
-pub(crate) fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
+pub(crate) fn see(board: &Board, m: Move) -> i32 {
     let mut gains = [0i32; 32];
 
-    let victim = board
-        .piece_on(m.to)
-        .map(|p| piece_value(p, params))
-        .unwrap_or(0);
+    let victim = board.piece_on(m.to).map(piece_value).unwrap_or(0);
     let promo = m
         .promotion
-        .map(|p| piece_value(p, params) - piece_value(Piece::Pawn, params))
+        .map(|p| piece_value(p) - piece_value(Piece::Pawn))
         .unwrap_or(0);
     gains[0] = victim + promo;
 
@@ -142,7 +139,7 @@ pub(crate) fn see(board: &Board, m: Move, params: &EvalParams) -> i32 {
         }
 
         d += 1;
-        gains[d] = piece_value(attacker, params);
+        gains[d] = piece_value(attacker);
 
         attacker = found_piece;
         occupied &= !found_sq.bitboard();

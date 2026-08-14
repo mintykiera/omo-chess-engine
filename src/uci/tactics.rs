@@ -1,13 +1,14 @@
 use cozy_chess::Board;
+use nnue_rs::Network;
 use polyglot_book_rs::PolyglotBook;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Duration;
 
-use crate::transposition::TranspositionTable;
 use super::move_fmt::format_uci_move;
+use crate::transposition::TranspositionTable;
 
-pub(crate) fn run_tactics(tt: &TranspositionTable) {
+pub(crate) fn run_tactics(tt: &TranspositionTable, network: &Network) {
     let positions = vec![
         ("M1 Back Rank", "6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1", "e1e8"),
         (
@@ -36,7 +37,6 @@ pub(crate) fn run_tactics(tt: &TranspositionTable) {
 
         tt.new_search();
         println!("Testing {}...", name);
-        let params = crate::eval::DEFAULT_PARAMS.clone();
         let mut hist = Vec::new();
         let no_book: Arc<Option<PolyglotBook>> = Arc::new(None);
         let (best, _) = crate::search::get_best_move(
@@ -49,7 +49,7 @@ pub(crate) fn run_tactics(tt: &TranspositionTable) {
             time_limit_ms,
             true,
             0,
-            &params,
+            network,
             &mut hist,
             &no_book,
             &None,

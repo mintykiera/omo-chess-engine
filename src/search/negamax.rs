@@ -1,16 +1,16 @@
 use cozy_chess::{Board, Move, Piece};
+use nnue_rs::{Accumulator, Network};
 use shakmaty::{CastlingMode, Chess, fen::Fen};
 use shakmaty_syzygy::{Tablebase, Wdl};
 
-use crate::eval::{EvalParams, EvalState, evaluate_board_incremental, piece_value};
-use crate::transposition::{NodeType, TranspositionTable};
-use super::ordering::{sq_idx, lmr_reduction};
+use super::ordering::{lmr_reduction, sq_idx};
 use super::see::see;
 use super::types::{
-    MoveStack, ScoredMoveList, SearchInfo,
-    MATE_SCORE, MAX_EXTENSIONS, MAX_PLY,
-    score_from_tt, score_to_tt,
+    MATE_SCORE, MAX_EXTENSIONS, MAX_PLY, MoveStack, ScoredMoveList, SearchInfo, score_from_tt,
+    score_to_tt,
 };
+use crate::eval::piece_value;
+use crate::transposition::{NodeType, TranspositionTable};
 
 pub(crate) fn negamax(
     board: &Board,
@@ -21,10 +21,10 @@ pub(crate) fn negamax(
     extensions: i32,
     info: &mut SearchInfo,
     tt: &TranspositionTable,
-    params: &EvalParams,
     history_hashes: &mut Vec<u64>,
     prev_move: Option<Move>,
-    eval_state: &EvalState,
+    network: &Network,
+    acc: &Accumulator,
     syzygy: &Option<Tablebase<Chess>>,
     excluded_move: Option<Move>,
 ) -> (i32, Option<Move>) {
@@ -37,18 +37,24 @@ pub(crate) fn negamax(
 
     let hash = board.hash();
     if ply > 0 {
+        // 1. 50-Move Rule Check
+        if board.halfmove_clock() >= 100 {
+            return (0, None);
+        }
+
+        // 2. Threefold / 2-fold Repetition Check
         let hc = board.halfmove_clock() as usize;
         let scan_limit = hc.min(history_hashes.len());
-        let start_idx = history_hashes.len() - scan_limit;
-
         let mut is_repetition = false;
-        for i in (start_idx..history_hashes.len()).rev().step_by(2) {
-            if history_hashes[i] == hash {
+        let mut i = 2;
+        while i <= scan_limit {
+            let idx = history_hashes.len() - i;
+            if history_hashes[idx] == hash {
                 is_repetition = true;
                 break;
             }
+            i += 2;
         }
-
         if is_repetition {
             return (0, None);
         }
@@ -59,7 +65,7 @@ pub(crate) fn negamax(
         if let Some(tb) = syzygy {
             let fen_str = board.to_string();
             if let Ok(fen) = fen_str.parse::<Fen>() {
-                if let Ok(pos) = fen.into_position::<Chess>(CastlingMode::Standard) {
+                if let Ok(pos) = fen.into_position(CastlingMode::Standard) {
                     if let Ok(wdl) = tb.probe_wdl_after_zeroing(&pos) {
                         let egtb_score = match wdl {
                             Wdl::Win => 20_000 - ply,
@@ -100,7 +106,7 @@ pub(crate) fn negamax(
 
     if depth <= 0 {
         return (
-            quiescence_search(board, alpha, beta, info, params, eval_state),
+            quiescence_search(board, alpha, beta, info, network, acc),
             None,
         );
     }
@@ -114,7 +120,8 @@ pub(crate) fn negamax(
     };
 
     if !in_check && ply > 0 && depth <= 3 && excluded_move.is_none() {
-        let static_eval = evaluate_board_incremental(board, eval_state, params);
+        let static_eval =
+            network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move());
         if static_eval - 120 * depth >= beta {
             return (beta, None);
         }
@@ -139,10 +146,10 @@ pub(crate) fn negamax(
                     extensions,
                     info,
                     tt,
-                    params,
                     history_hashes,
                     None,
-                    eval_state,
+                    network,
+                    acc,
                     syzygy,
                     None,
                 );
@@ -183,10 +190,10 @@ pub(crate) fn negamax(
                     extensions,
                     info,
                     tt,
-                    params,
                     history_hashes,
                     prev_move,
-                    eval_state,
+                    network,
+                    acc,
                     syzygy,
                     Some(tt_m),
                 );
@@ -222,7 +229,8 @@ pub(crate) fn negamax(
     // Futility Pruning flag before move loop
     let mut futility_pruning = false;
     if !in_check && depth <= 4 && ply > 0 {
-        let static_eval = evaluate_board_incremental(board, eval_state, params);
+        let static_eval =
+            network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move());
         if static_eval + (depth * 100) <= alpha {
             futility_pruning = true;
         }
@@ -240,7 +248,6 @@ pub(crate) fn negamax(
         &info.history,
         &info.cont_history,
         prev_move,
-        params,
     );
 
     let mut best_move: Option<Move> = None;
@@ -261,9 +268,6 @@ pub(crate) fn negamax(
             continue;
         }
 
-        let mut child_eval = *eval_state;
-        child_eval.make_move(board, m, params);
-
         let mut next_board = board.clone();
         next_board.play_unchecked(m);
 
@@ -278,7 +282,16 @@ pub(crate) fn negamax(
             quiet_moves_searched += 1;
         }
 
-        let singular_ext = if is_singular && Some(m) == singular_move && extensions < MAX_EXTENSIONS {
+        let mut child_acc = network.empty_accumulator();
+        network.update(
+            &crate::eval::OmoBoard(board),
+            &crate::eval::OmoBoard(&next_board),
+            acc,
+            &mut child_acc,
+        );
+
+        let singular_ext = if is_singular && Some(m) == singular_move && extensions < MAX_EXTENSIONS
+        {
             1
         } else {
             0
@@ -297,10 +310,10 @@ pub(crate) fn negamax(
                 extensions + singular_ext,
                 info,
                 tt,
-                params,
                 history_hashes,
                 Some(m),
-                &child_eval,
+                network,
+                &child_acc,
                 syzygy,
                 None,
             );
@@ -331,10 +344,10 @@ pub(crate) fn negamax(
                 extensions + singular_ext,
                 info,
                 tt,
-                params,
                 history_hashes,
                 Some(m),
-                &child_eval,
+                network,
+                &child_acc,
                 syzygy,
                 None,
             );
@@ -351,10 +364,10 @@ pub(crate) fn negamax(
                         extensions + singular_ext,
                         info,
                         tt,
-                        params,
                         history_hashes,
                         Some(m),
-                        &child_eval,
+                        network,
+                        &child_acc,
                         syzygy,
                         None,
                     );
@@ -421,8 +434,8 @@ pub(crate) fn quiescence_search(
     mut alpha: i32,
     beta: i32,
     info: &mut SearchInfo,
-    params: &EvalParams,
-    eval_state: &EvalState,
+    network: &Network,
+    acc: &Accumulator,
 ) -> i32 {
     info.check_time();
     if info.aborted {
@@ -435,7 +448,7 @@ pub(crate) fn quiescence_search(
     let stand_pat = if in_check {
         -MATE_SCORE
     } else {
-        evaluate_board_incremental(board, eval_state, params)
+        network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move())
     };
 
     if !in_check {
@@ -468,38 +481,37 @@ pub(crate) fn quiescence_search(
 
     let moves = move_stack.as_mut_slice();
     moves.sort_unstable_by_key(|m| {
-        let victim_val = board
-            .piece_on(m.to)
-            .map(|p| piece_value(p, params))
-            .unwrap_or(0);
-        let promo_val = m.promotion.map(|p| piece_value(p, params)).unwrap_or(0);
+        let victim_val = board.piece_on(m.to).map(piece_value).unwrap_or(0);
+        let promo_val = m.promotion.map(piece_value).unwrap_or(0);
         -(victim_val + promo_val)
     });
 
     const DELTA_MARGIN: i32 = 200;
     for m in moves.iter() {
         if !in_check {
-            let victim_val = board
-                .piece_on(m.to)
-                .map(|p| piece_value(p, params))
-                .unwrap_or(0);
-            let promo_val = m.promotion.map(|p| piece_value(p, params)).unwrap_or(0);
+            let victim_val = board.piece_on(m.to).map(piece_value).unwrap_or(0);
+            let promo_val = m.promotion.map(piece_value).unwrap_or(0);
             if stand_pat + victim_val + promo_val + DELTA_MARGIN < alpha {
                 continue;
             }
 
-            if see(board, *m, params) < 0 {
+            if see(board, *m) < 0 {
                 continue;
             }
         }
 
-        let mut child_eval = *eval_state;
-        child_eval.make_move(board, *m, params);
-
         let mut next_board = board.clone();
         next_board.play_unchecked(*m);
 
-        let score = -quiescence_search(&next_board, -beta, -alpha, info, params, &child_eval);
+        let mut child_acc = network.empty_accumulator();
+        network.update(
+            &crate::eval::OmoBoard(board),
+            &crate::eval::OmoBoard(&next_board),
+            acc,
+            &mut child_acc,
+        );
+
+        let score = -quiescence_search(&next_board, -beta, -alpha, info, network, &child_acc);
 
         if info.aborted {
             return 0;

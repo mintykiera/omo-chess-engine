@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::eval::EvalParams;
 use super::ordering::score_move;
 
 pub(crate) const MAX_DEPTH: i32 = 64;
@@ -76,7 +75,6 @@ impl ScoredMoveList {
         history: &[[i32; 64]; 64],
         cont_history: &[[i32; 64]; 64],
         prev_move: Option<Move>,
-        params: &EvalParams,
     ) -> Self {
         let mut result = Self {
             moves: [Move {
@@ -99,7 +97,6 @@ impl ScoredMoveList {
                 history,
                 cont_history,
                 prev_move,
-                params,
             );
         }
         result

@@ -14,7 +14,10 @@ pub fn load_syzygy(path: &str) -> Option<Tablebase<Chess>> {
             }
         }
         Err(e) => {
-            println!("info string Failed to load Syzygy tables from {}: {}", path, e);
+            println!(
+                "info string Failed to load Syzygy tables from {}: {}",
+                path, e
+            );
             None
         }
     }

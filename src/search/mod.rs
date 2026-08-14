@@ -1,12 +1,13 @@
-mod types;
-mod ordering;
-mod see;
-mod pv;
 mod negamax;
+mod ordering;
+mod pv;
+mod see;
+mod types;
 
 pub use types::SearchInfo;
 
 use cozy_chess::{Board, Move};
+use nnue_rs::Network;
 use polyglot_book_rs::PolyglotBook;
 use shakmaty::Chess;
 use shakmaty_syzygy::Tablebase;
@@ -14,12 +15,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::eval::{EvalParams, EvalState};
 use crate::transposition::TranspositionTable;
-use crate::uci::{parse_uci_move, format_uci_move};
-use types::{MAX_DEPTH, MATE_SCORE};
-use pv::extract_pv;
+use crate::uci::{format_uci_move, parse_uci_move};
 use negamax::negamax;
+use pv::extract_pv;
+use types::{MATE_SCORE, MAX_DEPTH};
 
 pub fn get_best_move(
     board: &Board,
@@ -31,7 +31,7 @@ pub fn get_best_move(
     time_limit_ms: Arc<AtomicU64>,
     is_main_thread: bool,
     thread_id: usize,
-    params: &EvalParams,
+    network: &Network,
     history_hashes: &mut Vec<u64>,
     opening_book: &Option<PolyglotBook>,
     syzygy: &Option<Tablebase<Chess>>,
@@ -79,7 +79,7 @@ pub fn get_best_move(
     let mut best_move: Option<Move> = None;
     let mut best_score = 0i32;
     let mut total_nodes: u64 = 0;
-    let eval_state = EvalState::from_board(board, params);
+    let root_acc = network.accumulator(&crate::eval::OmoBoard(board));
 
     let mut stable_count: i32 = 0;
     let mut prev_best_move: Option<Move> = None;
@@ -134,10 +134,10 @@ pub fn get_best_move(
                 0,
                 &mut info,
                 tt,
-                params,
                 history_hashes,
                 None,
-                &eval_state,
+                network,
+                &root_acc,
                 syzygy,
                 None,
             );

@@ -105,6 +105,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
+name = "nnue-rs"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f484047679d5f4ad45412bffb6e4e9ee8d8943fdaae65107ad9b9fa6ba32d916"
+
+[[package]]
 name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -124,6 +130,7 @@ name = "omo-engine-rs"
 version = "0.1.0"
 dependencies = [
  "cozy-chess",
+ "nnue-rs",
  "polyglot-book-rs",
  "rand",
  "rayon",

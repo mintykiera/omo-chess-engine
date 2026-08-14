@@ -1,10 +1,10 @@
 mod eval;
 mod search;
 mod transposition;
-mod tuner;
 mod uci;
 
 use cozy_chess::Board;
+use nnue_rs::Network;
 use polyglot_book_rs::PolyglotBook;
 use shakmaty_syzygy::Tablebase;
 use std::io::{self, BufRead};
@@ -14,8 +14,8 @@ use std::thread;
 use std::time::Instant;
 
 use uci::{
-    format_uci_move, get_book_path, get_memory_path, load_syzygy, parse_go_time, parse_total_clock,
-    parse_uci_move, SearchHandle,
+    SearchHandle, format_uci_move, get_book_path, get_memory_path, load_syzygy, parse_go_time,
+    parse_total_clock, parse_uci_move,
 };
 
 fn main() {
@@ -24,6 +24,12 @@ fn main() {
     let mut handle = SearchHandle::new();
     let mut num_threads = 1;
     let mut game_history: Vec<u64> = Vec::new();
+
+    let nnue_path = uci::get_nnue_path();
+    let network = Arc::new(
+        Network::from_file(nnue_path.to_str().unwrap())
+            .expect("Failed to load omo.nnue"),
+    );
 
     let mem_path = get_memory_path();
     if mem_path.exists() {
@@ -190,7 +196,7 @@ fn main() {
                     let sf_clone = Arc::clone(&stop_flag);
                     let ip_clone = Arc::clone(&is_pondering);
                     let tl_clone = Arc::clone(&time_limit_ms);
-                    let params = crate::eval::DEFAULT_PARAMS.clone();
+                    let net_clone = Arc::clone(&network);
                     let mut history_clone = game_history.clone();
                     let book_clone = Arc::clone(&opening_book);
                     let syzygy_clone = Arc::clone(&syzygy);
@@ -206,7 +212,7 @@ fn main() {
                             tl_clone,
                             i == 0,
                             i,
-                            &params,
+                            &net_clone,
                             &mut history_clone,
                             &book_clone,
                             &syzygy_clone,
@@ -311,24 +317,7 @@ fn main() {
             }
             "tactics" => {
                 handle.stop_and_join();
-                uci::tactics::run_tactics(&tt);
-            }
-
-            "gensamples" => {
-                if tokens.len() < 3 {
-                    println!("Usage: gensamples <num_games> <output_file>");
-                    continue;
-                }
-                if let Ok(num) = tokens[1].parse::<usize>() {
-                    tuner::generate_dataset(num, tokens[2]);
-                }
-            }
-            "tune" => {
-                if tokens.len() < 2 {
-                    println!("Usage: tune <dataset_file>");
-                    continue;
-                }
-                tuner::tune(tokens[1]);
+                uci::tactics::run_tactics(&tt, &network);
             }
             "savememory" => {
                 let mem_path = get_memory_path();

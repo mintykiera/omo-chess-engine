@@ -1,6 +1,6 @@
 use cozy_chess::{Board, Move, Square};
 
-use crate::eval::{EvalParams, piece_value};
+use crate::eval::piece_value;
 
 #[inline]
 pub(crate) fn sq_idx(sq: Square) -> usize {
@@ -23,21 +23,14 @@ pub(crate) fn score_move(
     history: &[[i32; 64]; 64],
     cont_history: &[[i32; 64]; 64],
     prev_move: Option<Move>,
-    params: &EvalParams,
 ) -> i32 {
     if Some(*m) == tt_move {
         return 1_000_000;
     }
 
     if board.color_on(m.to).is_some() {
-        let victim_val = board
-            .piece_on(m.to)
-            .map(|p| piece_value(p, params))
-            .unwrap_or(0);
-        let attacker_val = board
-            .piece_on(m.from)
-            .map(|p| piece_value(p, params))
-            .unwrap_or(100);
+        let victim_val = board.piece_on(m.to).map(piece_value).unwrap_or(0);
+        let attacker_val = board.piece_on(m.from).map(piece_value).unwrap_or(100);
         return 100_000 + victim_val * 10 - attacker_val;
     }
 
