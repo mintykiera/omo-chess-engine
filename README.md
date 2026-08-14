@@ -1,4 +1,4 @@
-<center><h1>OMO</h1></center>
+<h1 align="center">OMO</h1>
 
 OMO is a high-performance, multi-threaded UCI chess engine written in pure, memory-safe Rust on top of `cozy-chess`. It pairs a custom **NNUE** evaluation network with an optimized alpha-beta search pipeline featuring modern pruning, reductions, and lockless concurrency.
 
