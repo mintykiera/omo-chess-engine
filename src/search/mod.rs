@@ -182,7 +182,6 @@ pub fn get_best_move(
             );
         }
 
-        // Emergency Extra Time on sudden score drop
         if depth > 1 && score < prev_score - 150 {
             let scaled_ms = ((info.time_limit.as_millis() as f64) * 2.5) as u64;
             let mut new_limit = Duration::from_millis(scaled_ms);
@@ -204,7 +203,6 @@ pub fn get_best_move(
         }
         prev_score = score;
 
-        // Instant-Stop on stable best move
         if depth > 1 {
             if best_move == prev_best_move && best_move.is_some() {
                 stable_count += 1;

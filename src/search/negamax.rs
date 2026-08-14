@@ -37,12 +37,10 @@ pub(crate) fn negamax(
 
     let hash = board.hash();
     if ply > 0 {
-        // 1. 50-Move Rule Check
         if board.halfmove_clock() >= 100 {
             return (0, None);
         }
 
-        // 2. Threefold / 2-fold Repetition Check
         let hc = board.halfmove_clock() as usize;
         let scan_limit = hc.min(history_hashes.len());
         let mut is_repetition = false;
@@ -60,7 +58,6 @@ pub(crate) fn negamax(
         }
     }
 
-    // Syzygy Endgame Tablebase probe
     if board.occupied().len() <= 6 && ply > 0 {
         if let Some(tb) = syzygy {
             let fen_str = board.to_string();
@@ -165,7 +162,6 @@ pub(crate) fn negamax(
         }
     }
 
-    // Singular Extensions verification search
     let mut is_singular = false;
     let mut singular_move = None;
 
@@ -226,7 +222,6 @@ pub(crate) fn negamax(
         }
     }
 
-    // Futility Pruning flag before move loop
     let mut futility_pruning = false;
     if !in_check && depth <= 4 && ply > 0 {
         let static_eval =
@@ -263,7 +258,6 @@ pub(crate) fn negamax(
         let is_capture = board.color_on(m.to).is_some();
         let is_quiet = !is_capture && m.promotion.is_none();
 
-        // Late Move Pruning (LMP)
         if !in_check && depth <= 4 && is_quiet && quiet_moves_searched > 3 + (2 * depth * depth) {
             continue;
         }
@@ -273,7 +267,6 @@ pub(crate) fn negamax(
 
         let gives_check = !next_board.checkers().is_empty();
 
-        // Futility Pruning
         if futility_pruning && is_quiet && !gives_check {
             continue;
         }

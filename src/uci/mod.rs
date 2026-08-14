@@ -1,11 +1,11 @@
-pub mod move_fmt;
-pub mod time;
-pub mod perft;
-pub mod tactics;
 pub mod handle;
+pub mod move_fmt;
+pub mod perft;
 pub mod syzygy;
+pub mod tactics;
+pub mod time;
 
-pub use move_fmt::{parse_uci_move, format_uci_move};
+pub(crate) use handle::{SearchHandle, get_book_path, get_memory_path, get_nnue_path};
+pub use move_fmt::{format_uci_move, parse_uci_move};
 pub use syzygy::load_syzygy;
 pub(crate) use time::{parse_go_time, parse_total_clock};
-pub(crate) use handle::{SearchHandle, get_memory_path, get_book_path, get_nnue_path};

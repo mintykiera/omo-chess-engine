@@ -26,10 +26,8 @@ fn main() {
     let mut game_history: Vec<u64> = Vec::new();
 
     let nnue_path = uci::get_nnue_path();
-    let network = Arc::new(
-        Network::from_file(nnue_path.to_str().unwrap())
-            .expect("Failed to load omo.nnue"),
-    );
+    let network =
+        Arc::new(Network::from_file(nnue_path.to_str().unwrap()).expect("Failed to load omo.nnue"));
 
     let mem_path = get_memory_path();
     if mem_path.exists() {
