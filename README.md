@@ -14,18 +14,52 @@ Play against OMO on Lichess: [lichess.org/@/omo-engine](https://lichess.org/@/om
 
 ## Performance & Benchmarks
 
-OMO achieves an estimated playing strength of **~3245 Elo**, measured through a 150-game tournament test suite against calibrated Stockfish baselines:
+OMO has been benchmarked across **300-game tournament matches** against calibrated Stockfish skill level baselines (900 games total):
 
-| Metric                              | Result                                               |
-| :---------------------------------- | :--------------------------------------------------- |
-| **Opponent**                        | Stockfish 15 (Skill Level 15 &bull; ~3070 Elo)       |
-| **Record**                          | **102W / 32L / 16D** (150 games)                     |
-| **Score Rate**                      | **73.3%** (110.0 / 150)                              |
-| **Elo Difference**                  | **+176 &plusmn; 58**                                 |
-| **Estimated Performance**           | **~3245 Elo**                                        |
-| **Likelihood of Superiority (LOS)** | **100.0%**                                           |
-| **Draw Ratio**                      | **10.7%**                                            |
-| **Color Splits**                    | White: 84.9% (64.5/76) &bull; Black: 61.5% (45.5/74) |
+| Opponent Baseline                               |  Record (300 Games)   |       Score Rate        |       Elo Diff      | Estimated Performance | Draw Rate |
+| :---------------------------------------------- | :-------------------: | :---------------------: | :-----------------: | :-------------------: | :-------: |
+| **Stockfish (Skill Level 15 &bull; ~3070 Elo)** | **200W – 67L – 33D**  | **72.2%** (216.5 / 300) |        ~+164        |     **~3234 Elo**     |   11.0%   |
+| **Stockfish (Skill Level 16 &bull; ~3111 Elo)** | **154W – 75L – 71D**  | **63.2%** (189.5 / 300) |        ~+95         |     **~3206 Elo**     |   23.7%   |
+| **Stockfish (Skill Level 17 &bull; ~3141 Elo)** | **105W – 84L – 111D** | **53.5%** (160.5 / 300) | +24.4 &plusmn; 31.3 |     **~3165 Elo**     |   37.0%   |
+
+### Detailed Match Breakdowns
+
+#### Stockfish Skill Level 15 (~3070 Elo Baseline)
+
+| Metric                    | Result                                      |
+| :------------------------ | :------------------------------------------ |
+| **Opponent**              | Stockfish (Skill Level 15 &bull; ~3070 Elo) |
+| **Record**                | **200W / 67L / 33D** (300 games)            |
+| **Score Rate**            | **72.2%** (216.5 / 300)                     |
+| **Elo Difference**        | **~+164**                                   |
+| **Estimated Performance** | **~3234 Elo**                               |
+| **Draw Ratio**            | **11.0%**                                   |
+| **Color Splits**          | White: 85.0% • Black: 59.3%                 |
+
+#### Stockfish Skill Level 16 (~3111 Elo Baseline)
+
+| Metric                    | Result                                      |
+| :------------------------ | :------------------------------------------ |
+| **Opponent**              | Stockfish (Skill Level 16 &bull; ~3111 Elo) |
+| **Record**                | **154W / 75L / 71D** (300 games)            |
+| **Score Rate**            | **63.2%** (189.5 / 300)                     |
+| **Elo Difference**        | **~+95**                                    |
+| **Estimated Performance** | **~3206 Elo**                               |
+| **Draw Ratio**            | **23.7%**                                   |
+| **Color Splits**          | White: 64.7% • Black: 61.7%                 |
+
+#### Stockfish Skill Level 17 (~3141 Elo Baseline)
+
+| Metric                              | Result                                                               |
+| :---------------------------------- | :------------------------------------------------------------------- |
+| **Opponent**                        | Stockfish (Skill Level 17 &bull; ~3141 Elo)                          |
+| **Record**                          | **105W / 84L / 111D** (300 games)                                    |
+| **Score Rate**                      | **53.5%** (160.5 / 300)                                              |
+| **Elo Difference**                  | **+24.4 &plusmn; 31.3**                                              |
+| **Estimated Performance**           | **~3165 Elo**                                                        |
+| **Likelihood of Superiority (LOS)** | **93.7%**                                                            |
+| **Draw Ratio**                      | **37.0%**                                                            |
+| **Color Splits**                    | White: 58.3% (63W - 38L - 49D) &bull; Black: 48.7% (42W - 46L - 62D) |
 
 ---
 
@@ -43,7 +77,7 @@ OMO achieves an estimated playing strength of **~3245 Elo**, measured through a 
   - **Null Move Pruning (NMP):** Adaptive depth reduction for fast cutoffs.
   - **Reverse Futility Pruning (RFP):** Static evaluation margins at shallow depths.
   - **Futility Pruning (FP):** Prunes unpromising quiet moves near leaf nodes.
-  - **Late Move Pruning (LMP):** Skips quiet moves beyond depth-scaled move thresholds ($3 + 2 \times \text{depth}^2$).
+  - **Late Move Pruning (LMP):** Skips quiet moves beyond depth-scaled move thresholds (3 + 2 * depth^2).
   - **Late Move Reductions (LMR):** Logarithmic reductions for late quiet moves.
   - **Static Exchange Evaluation (SEE):** Full ray-caster capture verification to filter bad captures in Quiescence Search and tactical moves.
 - **Extensions:** Check extensions and **Singular Extensions** to verify critical TT moves.
