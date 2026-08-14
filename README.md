@@ -1,7 +1,5 @@
 <center><h1>OMO</h1></center>
 
----
-
 OMO is a high-performance, multi-threaded UCI chess engine written in pure, memory-safe Rust on top of `cozy-chess`. It pairs a custom **NNUE** evaluation network with an optimized alpha-beta search pipeline featuring modern pruning, reductions, and lockless concurrency.
 
 Play against OMO on Lichess: [lichess.org/@/omo-engine](https://lichess.org/@/omo-engine)
@@ -12,16 +10,16 @@ Play against OMO on Lichess: [lichess.org/@/omo-engine](https://lichess.org/@/om
 
 OMO achieves an estimated playing strength of **~3245 Elo**, measured through a 150-game tournament test suite against calibrated Stockfish baselines:
 
-| Metric | Result |
-| :--- | :--- |
-| **Opponent** | Stockfish 15 (Skill Level 15 &bull; ~3070 Elo) |
-| **Record** | **102W / 32L / 16D** (150 games) |
-| **Score Rate** | **73.3%** (110.0 / 150) |
-| **Elo Difference** | **+176 &plusmn; 58** |
-| **Estimated Performance** | **~3245 Elo** |
-| **Likelihood of Superiority (LOS)** | **100.0%** |
-| **Draw Ratio** | **10.7%** |
-| **Color Splits** | White: 84.9% (64.5/76) &bull; Black: 61.5% (45.5/74) |
+| Metric                              | Result                                               |
+| :---------------------------------- | :--------------------------------------------------- |
+| **Opponent**                        | Stockfish 15 (Skill Level 15 &bull; ~3070 Elo)       |
+| **Record**                          | **102W / 32L / 16D** (150 games)                     |
+| **Score Rate**                      | **73.3%** (110.0 / 150)                              |
+| **Elo Difference**                  | **+176 &plusmn; 58**                                 |
+| **Estimated Performance**           | **~3245 Elo**                                        |
+| **Likelihood of Superiority (LOS)** | **100.0%**                                           |
+| **Draw Ratio**                      | **10.7%**                                            |
+| **Color Splits**                    | White: 84.9% (64.5/76) &bull; Black: 61.5% (45.5/74) |
 
 ---
 
@@ -116,4 +114,3 @@ flowchart TD
 ## Author
 
 Made with ♟️ by **mintykiera**
-
