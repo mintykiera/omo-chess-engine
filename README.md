@@ -23,50 +23,6 @@ OMO achieves an estimated playing strength of **~3245 Elo**, measured through a 
 
 ---
 
-## System Architecture
-
-```mermaid
-flowchart TD
-    subgraph Input["Input & Knowledge"]
-        UCI["UCI Command (go / position)"]
-        Book["Polyglot Opening Book (book.bin)"]
-        Syzygy["Syzygy Tablebases (6-piece WDL)"]
-    end
-
-    subgraph Search["Search Pipeline (Lazy SMP)"]
-        Root["Root Controller & Clock Management"]
-        PVS["PVS Negamax + Aspiration Windows"]
-        MO["Move Ordering (TT &bull; MVV-LVA &bull; Killers &bull; History)"]
-        Prune["Pruning & Reductions (NMP, RFP, FP, LMP, LMR, Singular)"]
-        QS["Quiescence Search (Delta & SEE Pruning)"]
-    end
-
-    subgraph Eval["Evaluation Engine"]
-        NNUE["Custom NNUE (76M positions)<br/>Incremental Accumulator Updates"]
-        Classical["Tapered Classical Fallback & Tuner"]
-    end
-
-    subgraph Memory["Transposition Cache"]
-        TT[("Lockless Transposition Table<br/>(AtomicU64 Bit Packing)")]
-        Disk[("Disk Persistence<br/>(omo_memory.bin)")]
-    end
-
-    UCI --> Root
-    Root -->|Lookup| Book
-    Root -->|Probe| Syzygy
-    Root --> PVS
-    PVS --> MO
-    MO --> Prune
-    Prune --> PVS
-    PVS --> QS
-    QS --> NNUE
-    PVS <--> TT
-    TT <--> Disk
-    PVS --> Output["Best Move & PV Output"]
-```
-
----
-
 ## Architecture & Features
 
 ### Evaluation
