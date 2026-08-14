@@ -2,6 +2,7 @@
 name = "omo-engine-rs"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE.md"
 
 [dependencies]
 cozy-chess = "0.3.4"

@@ -1,5 +1,11 @@
 <h1 align="center">OMO</h1>
 
+<p align="center">
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-All%20Rights%20Reserved-red.svg?style=flat-square" alt="License: All Rights Reserved"></a>
+  <a href="https://lichess.org/@/omo-engine"><img src="https://img.shields.io/badge/Lichess-Play%20OMO-orange?style=flat-square&logo=lichess" alt="Lichess"></a>
+  <img src="https://img.shields.io/badge/Rust-2024%20Edition-black?style=flat-square&logo=rust" alt="Rust">
+</p>
+
 OMO is a high-performance, multi-threaded UCI chess engine written in pure, memory-safe Rust on top of `cozy-chess`. It pairs a custom **NNUE** evaluation network with an optimized alpha-beta search pipeline featuring modern pruning, reductions, and lockless concurrency.
 
 Play against OMO on Lichess: [lichess.org/@/omo-engine](https://lichess.org/@/omo-engine)
@@ -70,3 +76,9 @@ OMO achieves an estimated playing strength of **~3245 Elo**, measured through a 
 ## Author
 
 Made with ♟️ by **mintykiera**
+
+---
+
+## License
+
+Copyright &copy; 2026 mintykiera. All rights reserved. See [`LICENSE.md`](LICENSE.md) for terms.
