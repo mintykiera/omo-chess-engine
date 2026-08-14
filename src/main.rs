@@ -2,154 +2,21 @@ mod eval;
 mod search;
 mod transposition;
 mod tuner;
+mod uci;
 
-use cozy_chess::{Board, Color, Move, Piece};
+use cozy_chess::Board;
+use polyglot_book_rs::PolyglotBook;
+use shakmaty_syzygy::Tablebase;
 use std::io::{self, BufRead};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use std::path::PathBuf;
-
-fn get_memory_path() -> PathBuf {
-    if let Ok(mut path) = std::env::current_exe() {
-        path.pop();
-        path.push("omo_memory.bin");
-        path
-    } else {
-        PathBuf::from("omo_memory.bin")
-    }
-}
-
-fn parse_uci_move(board: &Board, m_str: &str) -> Option<Move> {
-    let mut m = m_str.parse::<Move>().ok()?;
-    if board.piece_on(m.from) == Some(Piece::King) {
-        let from_str = m.from.to_string();
-        let to_str = m.to.to_string();
-        if from_str == "e1" && to_str == "g1" {
-            m.to = "h1".parse().unwrap();
-        } else if from_str == "e1" && to_str == "c1" {
-            m.to = "a1".parse().unwrap();
-        } else if from_str == "e8" && to_str == "g8" {
-            m.to = "h8".parse().unwrap();
-        } else if from_str == "e8" && to_str == "c8" {
-            m.to = "a8".parse().unwrap();
-        }
-    }
-    Some(m)
-}
-
-pub fn format_uci_move(board: &Board, m: Move) -> String {
-    let mut out_move = m;
-    if board.piece_on(m.from) == Some(Piece::King) {
-        let from_str = m.from.to_string();
-        let to_str = m.to.to_string();
-        if from_str == "e1" && to_str == "h1" {
-            out_move.to = "g1".parse().unwrap();
-        } else if from_str == "e1" && to_str == "a1" {
-            out_move.to = "c1".parse().unwrap();
-        } else if from_str == "e8" && to_str == "h8" {
-            out_move.to = "g8".parse().unwrap();
-        } else if from_str == "e8" && to_str == "a8" {
-            out_move.to = "c8".parse().unwrap();
-        }
-    }
-    out_move.to_string()
-}
-
-fn perft(board: &Board, depth: i32) -> u64 {
-    if depth == 0 {
-        return 1;
-    }
-    let mut nodes = 0u64;
-    board.generate_moves(|move_list| {
-        for m in move_list {
-            let mut next = board.clone();
-            next.play_unchecked(m);
-            nodes += perft(&next, depth - 1);
-        }
-        false
-    });
-    nodes
-}
-
-fn parse_uci_param(tokens: &[&str], name: &str) -> Option<u64> {
-    tokens
-        .iter()
-        .position(|&r| r == name)
-        .and_then(|i| tokens.get(i + 1))
-        .and_then(|s| s.parse::<u64>().ok())
-}
-
-fn parse_go_time(tokens: &[&str], side: Color) -> Duration {
-    if let Some(ms) = parse_uci_param(tokens, "movetime") {
-        return Duration::from_millis(ms);
-    }
-
-    let time_key = if side == Color::White {
-        "wtime"
-    } else {
-        "btime"
-    };
-    let inc_key = if side == Color::White { "winc" } else { "binc" };
-
-    if let Some(our_time) = parse_uci_param(tokens, time_key) {
-        let safe_time = our_time.saturating_sub(50);
-        if safe_time < 100 {
-            return Duration::from_millis(10);
-        }
-
-        let our_inc = parse_uci_param(tokens, inc_key).unwrap_or(0);
-        let mut mtg = parse_uci_param(tokens, "movestogo").unwrap_or(30);
-
-        if safe_time < 2000 {
-            mtg = 40;
-        }
-
-        let base = safe_time / mtg.max(1);
-        let target = base + (our_inc * 3) / 4;
-        let max_time = safe_time / 4;
-        let ms = target.min(max_time).max(10);
-
-        return Duration::from_millis(ms);
-    }
-
-    if tokens.contains(&"infinite") {
-        return Duration::from_secs(3600);
-    }
-
-    Duration::from_millis(1000)
-}
-
-struct SearchHandle {
-    threads: Vec<thread::JoinHandle<()>>,
-    stop_flag: Arc<AtomicBool>,
-    is_pondering: Arc<AtomicBool>,
-    time_limit_ms: Arc<AtomicU64>,
-}
-
-impl SearchHandle {
-    fn new() -> Self {
-        Self {
-            threads: Vec::new(),
-            stop_flag: Arc::new(AtomicBool::new(false)),
-            is_pondering: Arc::new(AtomicBool::new(false)),
-            time_limit_ms: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    fn stop_and_join(&mut self) {
-        self.stop_flag.store(true, Ordering::Relaxed);
-        for handle in self.threads.drain(..) {
-            let _ = handle.join();
-        }
-    }
-
-    fn is_searching(&self) -> bool {
-        self.threads.iter().any(|h| !h.is_finished())
-    }
-}
+use uci::{
+    format_uci_move, get_book_path, get_memory_path, load_syzygy, parse_go_time, parse_total_clock,
+    parse_uci_move, SearchHandle,
+};
 
 fn main() {
     let board = Arc::new(Mutex::new(Board::default()));
@@ -164,6 +31,32 @@ fn main() {
             println!("info string Transposition table memory restored from disk");
         }
     }
+
+    let book_path = get_book_path();
+    let opening_book: Arc<Option<PolyglotBook>> = if book_path.exists() {
+        match PolyglotBook::load(book_path.to_str().unwrap()) {
+            Ok(book) => {
+                println!(
+                    "info string Opening book loaded from {}",
+                    book_path.display()
+                );
+                Arc::new(Some(book))
+            }
+            Err(_) => {
+                println!("info string Failed to load opening book, continuing without it");
+                Arc::new(None)
+            }
+        }
+    } else {
+        Arc::new(None)
+    };
+
+    let default_syzygy_path = std::path::Path::new("syzygy");
+    let mut syzygy: Arc<Option<Tablebase<shakmaty::Chess>>> = if default_syzygy_path.exists() {
+        Arc::new(load_syzygy("syzygy"))
+    } else {
+        Arc::new(None)
+    };
 
     let stdin = io::stdin();
 
@@ -185,12 +78,18 @@ fn main() {
             "setoption" => {
                 if let Some(name_idx) = tokens.iter().position(|&r| r == "name") {
                     if let Some(value_idx) = tokens.iter().position(|&r| r == "value") {
-                        if name_idx + 1 < tokens.len()
-                            && tokens[name_idx + 1].to_lowercase() == "threads"
-                        {
-                            if value_idx + 1 < tokens.len() {
-                                if let Ok(t) = tokens[value_idx + 1].parse::<usize>() {
-                                    num_threads = t.max(1);
+                        if name_idx + 1 < tokens.len() {
+                            let opt_name = tokens[name_idx + 1].to_lowercase();
+                            if opt_name == "threads" {
+                                if value_idx + 1 < tokens.len() {
+                                    if let Ok(t) = tokens[value_idx + 1].parse::<usize>() {
+                                        num_threads = t.max(1);
+                                    }
+                                }
+                            } else if opt_name == "syzygypath" {
+                                if value_idx + 1 < tokens.len() {
+                                    let path = tokens[value_idx + 1..].join(" ");
+                                    syzygy = Arc::new(load_syzygy(&path));
                                 }
                             }
                         }
@@ -200,6 +99,8 @@ fn main() {
             "uci" => {
                 println!("id name Omo");
                 println!("id author kieraesque");
+                println!("option name Threads type spin default 1 min 1 max 256");
+                println!("option name SyzygyPath type string default syzygy");
                 println!("uciok");
             }
             "isready" => {
@@ -271,6 +172,7 @@ fn main() {
                 }
 
                 let time_limit = parse_go_time(&tokens, board_snapshot.side_to_move());
+                let total_clock = parse_total_clock(&tokens, board_snapshot.side_to_move());
 
                 let stop_flag = Arc::new(AtomicBool::new(false));
                 let is_pondering = Arc::new(AtomicBool::new(ponder));
@@ -290,11 +192,14 @@ fn main() {
                     let tl_clone = Arc::clone(&time_limit_ms);
                     let params = crate::eval::DEFAULT_PARAMS.clone();
                     let mut history_clone = game_history.clone();
+                    let book_clone = Arc::clone(&opening_book);
+                    let syzygy_clone = Arc::clone(&syzygy);
 
                     handle.threads.push(thread::spawn(move || {
                         let (best, ponder_mv) = search::get_best_move(
                             &board_clone,
                             time_limit,
+                            total_clock,
                             &tt_clone,
                             sf_clone.clone(),
                             ip_clone,
@@ -303,6 +208,8 @@ fn main() {
                             i,
                             &params,
                             &mut history_clone,
+                            &book_clone,
+                            &syzygy_clone,
                         );
 
                         if i == 0 {
@@ -349,7 +256,7 @@ fn main() {
                 let depth: i32 = tokens.get(1).and_then(|s| s.parse().ok()).unwrap_or(5);
                 let b = board.lock().unwrap().clone();
                 let start = Instant::now();
-                let nodes = perft(&b, depth);
+                let nodes = uci::perft::perft(&b, depth);
                 let elapsed = start.elapsed();
                 let ms = elapsed.as_millis().max(1);
                 let nps = ((nodes as u128) * 1000) / ms;
@@ -385,7 +292,7 @@ fn main() {
                 let mut all_correct = true;
                 for (fen, depth, expected) in positions {
                     let b: Board = fen.parse().unwrap();
-                    let nodes = perft(&b, depth);
+                    let nodes = uci::perft::perft(&b, depth);
                     if nodes == expected {
                         println!("PASS: {} perft({}) = {}", fen, depth, nodes);
                     } else {
@@ -404,67 +311,7 @@ fn main() {
             }
             "tactics" => {
                 handle.stop_and_join();
-
-                let positions = vec![
-                    ("M1 Back Rank", "6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1", "e1e8"),
-                    (
-                        "M1 Scholar",
-                        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
-                        "h5f7",
-                    ),
-                    (
-                        "M2 Discovered",
-                        "r5rk/5p1p/5R2/4B3/8/8/7P/7K w - - 0 1",
-                        "f6a6",
-                    ),
-                    ("Hanging Queen", "4k3/8/8/3q4/8/8/3R4/4K3 w - - 0 1", "d2d5"),
-                    ("Knight Fork", "8/3k1q2/8/8/8/3N4/8/4K3 w - - 0 1", "d3e5"),
-                    ("Rook Pin", "4k3/4q3/8/8/8/8/P7/4R1K1 w - - 0 1", "e1e7"),
-                    ("Bishop Skewer", "7q/8/8/4k3/8/8/8/2B3K1 w - - 0 1", "c1b2"),
-                    ("Pawn Fork", "4k3/8/8/8/3p4/2N1R3/8/4K3 b - - 0 1", "d4e3"),
-                ];
-                let mut passed = 0;
-                for (name, fen, expected) in &positions {
-                    let b: Board = fen.parse().unwrap();
-
-                    let stop_flag = Arc::new(AtomicBool::new(false));
-                    let is_pondering = Arc::new(AtomicBool::new(false));
-                    let time_limit_ms = Arc::new(AtomicU64::new(1000));
-
-                    tt.new_search();
-                    println!("Testing {}...", name);
-                    let params = crate::eval::DEFAULT_PARAMS.clone();
-                    let mut hist = Vec::new();
-                    let (best, _) = search::get_best_move(
-                        &b,
-                        Duration::from_millis(1000),
-                        &tt,
-                        stop_flag,
-                        is_pondering,
-                        time_limit_ms,
-                        true,
-                        0,
-                        &params,
-                        &mut hist,
-                    );
-
-                    if let Some(m) = best {
-                        let best_str = format_uci_move(&b, m);
-                        if best_str == *expected {
-                            println!("PASS: {} -> found {} as expected", name, best_str);
-                            passed += 1;
-                        } else {
-                            println!(
-                                "FAIL: {} -> expected {}, found {}",
-                                name, expected, best_str
-                            );
-                        }
-                    } else {
-                        println!("FAIL: {} -> found no move", name);
-                    }
-                    println!("---");
-                }
-                println!("Tactics score: {}/{}", passed, positions.len());
+                uci::tactics::run_tactics(&tt);
             }
 
             "gensamples" => {

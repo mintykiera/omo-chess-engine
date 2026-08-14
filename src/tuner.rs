@@ -98,6 +98,7 @@ pub fn generate_dataset(num_games: usize, output_file: &str) {
                         let (best, _) = get_best_move(
                             &board,
                             Duration::from_millis(15),
+                            None,
                             &tt_clone,
                             stop_flag,
                             is_pondering,
@@ -106,6 +107,8 @@ pub fn generate_dataset(num_games: usize, output_file: &str) {
                             0,
                             &params,
                             &mut hist_clone,
+                            &None,
+                            &None,
                         );
 
                         if let Some(m) = best {
