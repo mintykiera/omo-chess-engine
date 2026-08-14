@@ -16,7 +16,7 @@ Play against OMO on Lichess: [lichess.org/@/omo-engine](https://lichess.org/@/om
 
 OMO has been benchmarked across **300-game tournament matches** against calibrated Stockfish skill level baselines (900 games total):
 
-| Opponent Baseline                               |  Record (300 Games)   |       Score Rate        |       Elo Diff      | Estimated Performance | Draw Rate |
+| Opponent Baseline                               |  Record (300 Games)   |       Score Rate        |      Elo Diff       | Estimated Performance | Draw Rate |
 | :---------------------------------------------- | :-------------------: | :---------------------: | :-----------------: | :-------------------: | :-------: |
 | **Stockfish (Skill Level 15 &bull; ~3070 Elo)** | **200W – 67L – 33D**  | **72.2%** (216.5 / 300) |        ~+164        |     **~3234 Elo**     |   11.0%   |
 | **Stockfish (Skill Level 16 &bull; ~3111 Elo)** | **154W – 75L – 71D**  | **63.2%** (189.5 / 300) |        ~+95         |     **~3206 Elo**     |   23.7%   |
@@ -31,10 +31,10 @@ OMO has been benchmarked across **300-game tournament matches** against calibrat
 | **Opponent**              | Stockfish (Skill Level 15 &bull; ~3070 Elo) |
 | **Record**                | **200W / 67L / 33D** (300 games)            |
 | **Score Rate**            | **72.2%** (216.5 / 300)                     |
-| **Elo Difference**        | **~+164**                                   |
-| **Estimated Performance** | **~3234 Elo**                               |
+| **Elo Difference**        | **+165.5 &plusmn; 40.8**                    |
+| **Estimated Performance** | **~3235 Elo**                               |
 | **Draw Ratio**            | **11.0%**                                   |
-| **Color Splits**          | White: 85.0% • Black: 59.3%                 |
+| **Color Splits**          | White: 79.5% &bull; Black: 64.8%            |
 
 #### Stockfish Skill Level 16 (~3111 Elo Baseline)
 
@@ -43,23 +43,22 @@ OMO has been benchmarked across **300-game tournament matches** against calibrat
 | **Opponent**              | Stockfish (Skill Level 16 &bull; ~3111 Elo) |
 | **Record**                | **154W / 75L / 71D** (300 games)            |
 | **Score Rate**            | **63.2%** (189.5 / 300)                     |
-| **Elo Difference**        | **~+95**                                    |
-| **Estimated Performance** | **~3206 Elo**                               |
+| **Elo Difference**        | **+93.7 &plusmn; 35.3**                     |
+| **Estimated Performance** | **~3205 Elo**                               |
 | **Draw Ratio**            | **23.7%**                                   |
-| **Color Splits**          | White: 64.7% • Black: 61.7%                 |
+| **Color Splits**          | White: 66.7% &bull; Black: 59.7%            |
 
 #### Stockfish Skill Level 17 (~3141 Elo Baseline)
 
-| Metric                              | Result                                                               |
-| :---------------------------------- | :------------------------------------------------------------------- |
-| **Opponent**                        | Stockfish (Skill Level 17 &bull; ~3141 Elo)                          |
-| **Record**                          | **105W / 84L / 111D** (300 games)                                    |
-| **Score Rate**                      | **53.5%** (160.5 / 300)                                              |
-| **Elo Difference**                  | **+24.4 &plusmn; 31.3**                                              |
-| **Estimated Performance**           | **~3165 Elo**                                                        |
-| **Likelihood of Superiority (LOS)** | **93.7%**                                                            |
-| **Draw Ratio**                      | **37.0%**                                                            |
-| **Color Splits**                    | White: 58.3% (63W - 38L - 49D) &bull; Black: 48.7% (42W - 46L - 62D) |
+| Metric                    | Result                                      |
+| :------------------------ | :------------------------------------------ |
+| **Opponent**              | Stockfish (Skill Level 17 &bull; ~3141 Elo) |
+| **Record**                | **105W / 84L / 111D** (300 games)           |
+| **Score Rate**            | **53.5%** (160.5 / 300)                     |
+| **Elo Difference**        | **+24.4 &plusmn; 31.3**                     |
+| **Estimated Performance** | **~3165 Elo**                               |
+| **Draw Ratio**            | **37.0%**                                   |
+| **Color Splits**          | White: 58.3% &bull; Black: 48.7%            |
 
 ---
 
@@ -77,7 +76,7 @@ OMO has been benchmarked across **300-game tournament matches** against calibrat
   - **Null Move Pruning (NMP):** Adaptive depth reduction for fast cutoffs.
   - **Reverse Futility Pruning (RFP):** Static evaluation margins at shallow depths.
   - **Futility Pruning (FP):** Prunes unpromising quiet moves near leaf nodes.
-  - **Late Move Pruning (LMP):** Skips quiet moves beyond depth-scaled move thresholds (3 + 2 * depth^2).
+  - **Late Move Pruning (LMP):** Skips quiet moves beyond depth-scaled move thresholds (3 + 2 \* depth^2).
   - **Late Move Reductions (LMR):** Logarithmic reductions for late quiet moves.
   - **Static Exchange Evaluation (SEE):** Full ray-caster capture verification to filter bad captures in Quiescence Search and tactical moves.
 - **Extensions:** Check extensions and **Singular Extensions** to verify critical TT moves.
@@ -110,8 +109,6 @@ OMO has been benchmarked across **300-game tournament matches** against calibrat
 ## Author
 
 Made with ♟️ by **mintykiera**
-
----
 
 ## License
 
