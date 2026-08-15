@@ -1,13 +1,13 @@
 use cozy_chess::{Board, Move, Piece};
 use nnue_rs::{Accumulator, Network};
-use shakmaty::{CastlingMode, Chess, fen::Fen};
+use shakmaty::{CastlingMode, Chess};
 use shakmaty_syzygy::{Tablebase, Wdl};
 
-use super::ordering::{lmr_reduction, sq_idx};
+use super::ordering::lmr_reduction;
 use super::see::see;
 use super::types::{
-    MATE_SCORE, MAX_EXTENSIONS, MAX_PLY, MoveStack, ScoredMoveList, SearchInfo, score_from_tt,
-    score_to_tt,
+    MATE_SCORE, MAX_EXTENSIONS, MAX_PLY, MoveStack, SearchInfo, SharedHistory, StagedMovePicker,
+    score_from_tt, score_to_tt,
 };
 use crate::eval::piece_value;
 use crate::transposition::{NodeType, TranspositionTable};
@@ -21,6 +21,7 @@ pub(crate) fn negamax(
     extensions: i32,
     info: &mut SearchInfo,
     tt: &TranspositionTable,
+    shared: &SharedHistory,
     history_hashes: &mut Vec<u64>,
     prev_move: Option<Move>,
     network: &Network,
@@ -34,6 +35,13 @@ pub(crate) fn negamax(
     }
 
     info.nodes += 1;
+
+    if ply >= (MAX_PLY as i32) - 1 {
+        return (
+            network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move()),
+            None,
+        );
+    }
 
     let hash = board.hash();
     if ply > 0 {
@@ -60,17 +68,86 @@ pub(crate) fn negamax(
 
     if board.occupied().len() <= 6 && ply > 0 {
         if let Some(tb) = syzygy {
-            let fen_str = board.to_string();
-            if let Ok(fen) = fen_str.parse::<Fen>() {
-                if let Ok(pos) = fen.into_position(CastlingMode::Standard) {
-                    if let Ok(wdl) = tb.probe_wdl_after_zeroing(&pos) {
-                        let egtb_score = match wdl {
-                            Wdl::Win => 20_000 - ply,
-                            Wdl::Loss => -20_000 + ply,
-                            _ => 0,
-                        };
-                        return (egtb_score, None);
+            let mut s_board = shakmaty::Board::empty();
+            for &color in &[cozy_chess::Color::White, cozy_chess::Color::Black] {
+                let s_color = if color == cozy_chess::Color::White {
+                    shakmaty::Color::White
+                } else {
+                    shakmaty::Color::Black
+                };
+                for &piece in &[
+                    cozy_chess::Piece::Pawn,
+                    cozy_chess::Piece::Knight,
+                    cozy_chess::Piece::Bishop,
+                    cozy_chess::Piece::Rook,
+                    cozy_chess::Piece::Queen,
+                    cozy_chess::Piece::King,
+                ] {
+                    let bb = board.colored_pieces(color, piece);
+                    let s_role = match piece {
+                        cozy_chess::Piece::Pawn => shakmaty::Role::Pawn,
+                        cozy_chess::Piece::Knight => shakmaty::Role::Knight,
+                        cozy_chess::Piece::Bishop => shakmaty::Role::Bishop,
+                        cozy_chess::Piece::Rook => shakmaty::Role::Rook,
+                        cozy_chess::Piece::Queen => shakmaty::Role::Queen,
+                        cozy_chess::Piece::King => shakmaty::Role::King,
+                    };
+                    for sq in bb {
+                        s_board.set_piece_at(
+                            shakmaty::Square::new(sq as u32),
+                            shakmaty::Piece {
+                                color: s_color,
+                                role: s_role,
+                            },
+                        );
                     }
+                }
+            }
+            let s_turn = if board.side_to_move() == cozy_chess::Color::White {
+                shakmaty::Color::White
+            } else {
+                shakmaty::Color::Black
+            };
+            let mut castling = shakmaty::Bitboard::default();
+            let w_cr = board.castle_rights(cozy_chess::Color::White);
+            if w_cr.short.is_some() {
+                castling.add(shakmaty::Square::H1);
+            }
+            if w_cr.long.is_some() {
+                castling.add(shakmaty::Square::A1);
+            }
+            let b_cr = board.castle_rights(cozy_chess::Color::Black);
+            if b_cr.short.is_some() {
+                castling.add(shakmaty::Square::H8);
+            }
+            if b_cr.long.is_some() {
+                castling.add(shakmaty::Square::A8);
+            }
+
+            let ep_square = board
+                .en_passant()
+                .map(|sq| shakmaty::Square::new(sq as u32));
+            use shakmaty::FromSetup;
+            let setup = shakmaty::Setup {
+                board: s_board,
+                promoted: shakmaty::Bitboard::default(),
+                turn: s_turn,
+                castling_rights: castling,
+                ep_square,
+                halfmoves: board.halfmove_clock() as u32,
+                fullmoves: std::num::NonZeroU32::new((board.fullmove_number() as u32).max(1))
+                    .unwrap(),
+                pockets: None,
+                remaining_checks: None,
+            };
+            if let Ok(pos) = shakmaty::Chess::from_setup(setup, CastlingMode::Standard) {
+                if let Ok(wdl) = tb.probe_wdl_after_zeroing(&pos) {
+                    let egtb_score = match wdl {
+                        Wdl::Win => 20_000 - ply,
+                        Wdl::Loss => -20_000 + ply,
+                        _ => 0,
+                    };
+                    return (egtb_score, None);
                 }
             }
         }
@@ -143,6 +220,7 @@ pub(crate) fn negamax(
                     extensions,
                     info,
                     tt,
+                    shared,
                     history_hashes,
                     None,
                     network,
@@ -186,6 +264,7 @@ pub(crate) fn negamax(
                     extensions,
                     info,
                     tt,
+                    shared,
                     history_hashes,
                     prev_move,
                     network,
@@ -204,6 +283,34 @@ pub(crate) fn negamax(
                 }
             }
         }
+    }
+
+    let mut tt_move = tt_entry.and_then(|e| e.best_move);
+
+    if depth >= 4 && !in_check && tt_move.is_none() && excluded_move.is_none() {
+        let iid_depth = depth - 2;
+        let _ = negamax(
+            board,
+            iid_depth,
+            alpha,
+            beta,
+            ply,
+            extensions,
+            info,
+            tt,
+            shared,
+            history_hashes,
+            prev_move,
+            network,
+            acc,
+            syzygy,
+            None,
+        );
+        if info.aborted {
+            return (0, None);
+        }
+        // Update the TT move with the result of the shallow search
+        tt_move = tt.get(hash).and_then(|e| e.best_move);
     }
 
     let mut move_stack = MoveStack::new();
@@ -231,31 +338,29 @@ pub(crate) fn negamax(
         }
     }
 
-    let tt_move = tt.get(hash).and_then(|e| e.best_move);
     let ply_idx = ply as usize;
 
-    let mut picker = ScoredMoveList::from_stack(
-        &move_stack,
-        board,
-        tt_move,
-        ply_idx,
-        &info.killers,
-        &info.history,
-        &info.cont_history,
-        prev_move,
-    );
+    let killers = if ply_idx < MAX_PLY {
+        [shared.get_killer(ply_idx, 0), shared.get_killer(ply_idx, 1)]
+    } else {
+        [None, None]
+    };
 
+    let mut picker = StagedMovePicker::new(&move_stack, tt_move, killers);
     let mut best_move: Option<Move> = None;
     let mut best_score = -MATE_SCORE;
     let mut move_index = 0usize;
     let mut quiet_moves_searched = 0i32;
 
-    while let Some((m, _)) = picker.pick_next() {
+    while let Some((m, _)) = picker.pick_next(board, shared, prev_move) {
         if excluded_move == Some(m) {
             continue;
         }
 
-        let is_capture = board.color_on(m.to).is_some();
+        let is_ep = board.piece_on(m.from) == Some(Piece::Pawn)
+            && m.from.file() != m.to.file()
+            && board.color_on(m.to).is_none();
+        let is_capture = board.color_on(m.to).is_some() || is_ep;
         let is_quiet = !is_capture && m.promotion.is_none();
 
         if !in_check && depth <= 4 && is_quiet && quiet_moves_searched > 3 + (2 * depth * depth) {
@@ -303,6 +408,7 @@ pub(crate) fn negamax(
                 extensions + singular_ext,
                 info,
                 tt,
+                shared,
                 history_hashes,
                 Some(m),
                 network,
@@ -315,7 +421,8 @@ pub(crate) fn negamax(
         } else {
             let mut reduced_depth = depth - 1 + singular_ext;
             let is_killer = ply_idx < MAX_PLY
-                && (info.killers[ply_idx][0] == Some(m) || info.killers[ply_idx][1] == Some(m));
+                && (shared.get_killer(ply_idx, 0) == Some(m)
+                    || shared.get_killer(ply_idx, 1) == Some(m));
             let do_lmr = move_index >= 3
                 && depth >= 3
                 && !is_capture
@@ -337,6 +444,7 @@ pub(crate) fn negamax(
                 extensions + singular_ext,
                 info,
                 tt,
+                shared,
                 history_hashes,
                 Some(m),
                 network,
@@ -357,6 +465,7 @@ pub(crate) fn negamax(
                         extensions + singular_ext,
                         info,
                         tt,
+                        shared,
                         history_hashes,
                         Some(m),
                         network,
@@ -384,22 +493,23 @@ pub(crate) fn negamax(
         if alpha >= beta {
             if board.color_on(m.to).is_none() {
                 if ply_idx < MAX_PLY {
-                    info.killers[ply_idx][1] = info.killers[ply_idx][0];
-                    info.killers[ply_idx][0] = Some(m);
+                    shared.update_killer(ply_idx, m);
                 }
                 let bonus = depth * depth;
-                let entry = &mut info.history[sq_idx(m.from)][sq_idx(m.to)];
-                *entry = (*entry + bonus).min(10_000);
+                shared.add_history(m.from, m.to, bonus);
 
                 if let Some(pm) = prev_move {
-                    let centry = &mut info.cont_history[sq_idx(pm.to)][sq_idx(m.to)];
-                    *centry = (*centry + bonus).min(10_000);
+                    shared.add_cont_history(pm.to, m.to, bonus);
                 }
             }
             break;
         }
 
         move_index += 1;
+    }
+
+    if best_score == -MATE_SCORE && !in_check {
+        best_score = alpha;
     }
 
     if excluded_move.is_none() {
@@ -461,7 +571,10 @@ pub(crate) fn quiescence_search(
     let mut move_stack = MoveStack::new();
     board.generate_moves(|move_list| {
         for m in move_list {
-            if in_check || board.color_on(m.to).is_some() || m.promotion.is_some() {
+            let is_ep = board.piece_on(m.from) == Some(Piece::Pawn)
+                && m.from.file() != m.to.file()
+                && board.color_on(m.to).is_none();
+            if in_check || board.color_on(m.to).is_some() || is_ep || m.promotion.is_some() {
                 move_stack.push(m);
             }
         }
@@ -474,7 +587,14 @@ pub(crate) fn quiescence_search(
 
     let moves = move_stack.as_mut_slice();
     moves.sort_unstable_by_key(|m| {
-        let victim_val = board.piece_on(m.to).map(piece_value).unwrap_or(0);
+        let is_ep = board.piece_on(m.from) == Some(Piece::Pawn)
+            && m.from.file() != m.to.file()
+            && board.color_on(m.to).is_none();
+        let victim_val = if is_ep {
+            piece_value(Piece::Pawn)
+        } else {
+            board.piece_on(m.to).map(piece_value).unwrap_or(0)
+        };
         let promo_val = m.promotion.map(piece_value).unwrap_or(0);
         -(victim_val + promo_val)
     });
@@ -482,7 +602,14 @@ pub(crate) fn quiescence_search(
     const DELTA_MARGIN: i32 = 200;
     for m in moves.iter() {
         if !in_check {
-            let victim_val = board.piece_on(m.to).map(piece_value).unwrap_or(0);
+            let is_ep = board.piece_on(m.from) == Some(Piece::Pawn)
+                && m.from.file() != m.to.file()
+                && board.color_on(m.to).is_none();
+            let victim_val = if is_ep {
+                piece_value(Piece::Pawn)
+            } else {
+                board.piece_on(m.to).map(piece_value).unwrap_or(0)
+            };
             let promo_val = m.promotion.map(piece_value).unwrap_or(0);
             if stand_pat + victim_val + promo_val + DELTA_MARGIN < alpha {
                 continue;

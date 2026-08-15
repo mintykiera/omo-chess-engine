@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
+use crate::search::SharedHistory;
 use uci::{
     SearchHandle, format_uci_move, get_book_path, get_memory_path, load_syzygy, parse_go_time,
     parse_total_clock, parse_uci_move,
@@ -20,7 +21,8 @@ use uci::{
 
 fn main() {
     let board = Arc::new(Mutex::new(Board::default()));
-    let tt = Arc::new(transposition::TranspositionTable::new(256));
+    let mut tt = Arc::new(transposition::TranspositionTable::new(256));
+    let shared_history = Arc::new(SharedHistory::new());
     let mut handle = SearchHandle::new();
     let mut num_threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -97,6 +99,15 @@ fn main() {
                                     let path = tokens[value_idx + 1..].join(" ");
                                     syzygy = Arc::new(load_syzygy(&path));
                                 }
+                            } else if opt_name == "hash" {
+                                if value_idx + 1 < tokens.len() {
+                                    if let Ok(h) = tokens[value_idx + 1].parse::<usize>() {
+                                        let h_clamped = h.clamp(1, 65536);
+                                        tt = Arc::new(transposition::TranspositionTable::new(
+                                            h_clamped,
+                                        ));
+                                    }
+                                }
                             }
                         }
                     }
@@ -107,6 +118,7 @@ fn main() {
                 println!("id author kieraesque");
                 println!("option name Threads type spin default 1 min 1 max 256");
                 println!("option name SyzygyPath type string default syzygy");
+                println!("option name Hash type spin default 256 min 1 max 65536");
                 println!("uciok");
             }
             "isready" => {
@@ -117,6 +129,7 @@ fn main() {
                 *board.lock().unwrap() = Board::default();
                 game_history.clear();
                 tt.new_search();
+                shared_history.clear();
             }
             "position" => {
                 handle.stop_and_join();
@@ -200,6 +213,7 @@ fn main() {
                     let mut history_clone = game_history.clone();
                     let book_clone = Arc::clone(&opening_book);
                     let syzygy_clone = Arc::clone(&syzygy);
+                    let shared_clone = Arc::clone(&shared_history);
 
                     handle.threads.push(thread::spawn(move || {
                         let (best, ponder_mv) = search::get_best_move(
@@ -207,6 +221,7 @@ fn main() {
                             time_limit,
                             total_clock,
                             &tt_clone,
+                            &shared_clone,
                             sf_clone.clone(),
                             ip_clone,
                             tl_clone,

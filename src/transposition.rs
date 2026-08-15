@@ -48,7 +48,14 @@ impl Default for LocklessEntry {
     }
 }
 
-fn pack_move(m: Option<Move>) -> u16 {
+pub const BUCKET_SIZE: usize = 4;
+
+#[derive(Default)]
+pub struct LocklessBucket {
+    pub entries: [LocklessEntry; BUCKET_SIZE],
+}
+
+pub fn pack_move(m: Option<Move>) -> u16 {
     match m {
         Some(mv) => {
             let from = mv.from as u16;
@@ -66,7 +73,7 @@ fn pack_move(m: Option<Move>) -> u16 {
     }
 }
 
-fn unpack_move(data: u16) -> Option<Move> {
+pub fn unpack_move(data: u16) -> Option<Move> {
     if (data & 0x8000) == 0 {
         return None;
     }
@@ -115,15 +122,14 @@ fn unpack_data2(data: u64) -> (i32, i32, Option<Move>, NodeType, u8) {
 }
 
 pub struct TranspositionTable {
-    table: Vec<LocklessEntry>,
+    table: Vec<LocklessBucket>,
     mask: usize,
     pub age: AtomicU8,
 }
 
 impl TranspositionTable {
     pub fn new(size_mb: usize) -> Self {
-        let entry_size = std::mem::size_of::<LocklessEntry>();
-        let count = (size_mb * 1024 * 1024) / entry_size;
+        let count = (size_mb * 1024 * 1024) / (std::mem::size_of::<LocklessEntry>() * BUCKET_SIZE);
         let count = if count < 2 {
             1
         } else {
@@ -132,7 +138,7 @@ impl TranspositionTable {
 
         let mut table = Vec::with_capacity(count);
         for _ in 0..count {
-            table.push(LocklessEntry::default());
+            table.push(LocklessBucket::default());
         }
 
         Self {
@@ -149,30 +155,32 @@ impl TranspositionTable {
 
     pub fn get(&self, hash: u64) -> Option<TTEntry> {
         let idx = self.index(hash);
-        let entry = &self.table[idx];
+        let bucket = &self.table[idx];
 
-        let hash_pre = entry.data1.load(Ordering::Acquire);
-        if hash_pre != hash {
-            return None;
+        for entry in &bucket.entries {
+            let hash_pre = entry.data1.load(Ordering::Acquire);
+            if hash_pre != hash {
+                continue;
+            }
+
+            let d2 = entry.data2.load(Ordering::Acquire);
+            let raw_d2 = d2 ^ hash;
+
+            let hash_post = entry.data1.load(Ordering::Acquire);
+
+            if hash_post == hash {
+                let (score, depth, best_move, node_type, age) = unpack_data2(raw_d2);
+                return Some(TTEntry {
+                    hash,
+                    depth,
+                    score,
+                    node_type,
+                    best_move,
+                    age,
+                });
+            }
         }
-
-        let d2 = entry.data2.load(Ordering::Acquire);
-
-        let hash_post = entry.data1.load(Ordering::Acquire);
-
-        if hash_post == hash {
-            let (score, depth, best_move, node_type, age) = unpack_data2(d2);
-            Some(TTEntry {
-                hash,
-                depth,
-                score,
-                node_type,
-                best_move,
-                age,
-            })
-        } else {
-            None
-        }
+        None
     }
 
     pub fn insert(
@@ -183,25 +191,44 @@ impl TranspositionTable {
         node_type: NodeType,
         best_move: Option<Move>,
     ) {
-        let idx = self.index(hash);
-        let entry = &self.table[idx];
+        let bucket = &self.table[self.index(hash)];
         let current_age = self.age.load(Ordering::Relaxed);
+        let d2 = pack_data2(score, depth, best_move, node_type, current_age);
+        let xor_d2 = d2 ^ hash;
 
-        let hash_old = entry.data1.load(Ordering::Acquire);
-        let d2_old = entry.data2.load(Ordering::Acquire);
+        for entry in &bucket.entries {
+            if entry.data1.load(Ordering::Acquire) == hash {
+                entry.data1.store(0, Ordering::Release);
+                entry.data2.store(xor_d2, Ordering::Release);
+                entry.data1.store(hash, Ordering::Release);
+                return;
+            }
+        }
 
-        let dominated = if hash_old == hash {
+        let mut best_entry = None;
+        let mut best_score = i64::MAX;
+
+        for entry in &bucket.entries {
+            let hash_old = entry.data1.load(Ordering::Acquire);
+            if hash_old == 0 {
+                best_entry = Some(entry);
+                break;
+            }
+
+            let d2_old = entry.data2.load(Ordering::Acquire) ^ hash_old;
             let (_, old_depth, _, _, old_age) = unpack_data2(d2_old);
-            old_age != (current_age & 0x3f) || old_depth <= depth
-        } else {
-            true
-        };
 
-        if dominated {
-            let d2 = pack_data2(score, depth, best_move, node_type, current_age);
+            let score =
+                (old_depth as i64) - (((current_age.wrapping_sub(old_age) & 0x3f) as i64) * 1000);
+            if score < best_score {
+                best_score = score;
+                best_entry = Some(entry);
+            }
+        }
 
+        if let Some(entry) = best_entry {
             entry.data1.store(0, Ordering::Release);
-            entry.data2.store(d2, Ordering::Release);
+            entry.data2.store(xor_d2, Ordering::Release);
             entry.data1.store(hash, Ordering::Release);
         }
     }
@@ -214,11 +241,13 @@ impl TranspositionTable {
         let file = File::create(path)?;
         let mut writer = BufWriter::new(file);
 
-        for entry in &self.table {
-            let d1 = entry.data1.load(Ordering::Relaxed);
-            let d2 = entry.data2.load(Ordering::Relaxed);
-            writer.write_all(&d1.to_le_bytes())?;
-            writer.write_all(&d2.to_le_bytes())?;
+        for bucket in &self.table {
+            for entry in &bucket.entries {
+                let d1 = entry.data1.load(Ordering::Relaxed);
+                let d2 = entry.data2.load(Ordering::Relaxed);
+                writer.write_all(&d1.to_le_bytes())?;
+                writer.write_all(&d2.to_le_bytes())?;
+            }
         }
         writer.flush()?;
         Ok(())
@@ -230,24 +259,28 @@ impl TranspositionTable {
         let mut buf1 = [0u8; 8];
         let mut buf2 = [0u8; 8];
 
-        for entry in &self.table {
-            if reader.read_exact(&mut buf1).is_ok() && reader.read_exact(&mut buf2).is_ok() {
-                let d1 = u64::from_le_bytes(buf1);
-                let d2 = u64::from_le_bytes(buf2);
+        for bucket in &self.table {
+            for entry in &bucket.entries {
+                if reader.read_exact(&mut buf1).is_ok() && reader.read_exact(&mut buf2).is_ok() {
+                    let d1 = u64::from_le_bytes(buf1);
+                    let d2 = u64::from_le_bytes(buf2);
 
-                let actual_hash = d1;
-                if actual_hash != 0 {
-                    let (score, depth, mv, nt, _age) = unpack_data2(d2);
-                    let new_d2 = pack_data2(score, depth, mv, nt, 0);
+                    let actual_hash = d1;
+                    if actual_hash != 0 {
+                        let actual_d2 = d2 ^ actual_hash;
+                        let (score, depth, mv, nt, _age) = unpack_data2(actual_d2);
+                        let new_d2 = pack_data2(score, depth, mv, nt, 0);
+                        let new_stored_d2 = new_d2 ^ actual_hash;
 
-                    entry.data2.store(new_d2, Ordering::Relaxed);
-                    entry.data1.store(actual_hash, Ordering::Relaxed);
+                        entry.data2.store(new_stored_d2, Ordering::Relaxed);
+                        entry.data1.store(actual_hash, Ordering::Relaxed);
+                    } else {
+                        entry.data2.store(0, Ordering::Relaxed);
+                        entry.data1.store(0, Ordering::Relaxed);
+                    }
                 } else {
-                    entry.data2.store(0, Ordering::Relaxed);
-                    entry.data1.store(0, Ordering::Relaxed);
+                    return Ok(());
                 }
-            } else {
-                break;
             }
         }
         Ok(())

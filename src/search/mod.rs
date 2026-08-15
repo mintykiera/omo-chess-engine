@@ -5,6 +5,7 @@ mod see;
 mod types;
 
 pub use types::SearchInfo;
+pub use types::SharedHistory;
 
 use cozy_chess::{Board, Move};
 use nnue_rs::Network;
@@ -13,7 +14,7 @@ use shakmaty::Chess;
 use shakmaty_syzygy::Tablebase;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::transposition::TranspositionTable;
 use crate::uci::{format_uci_move, parse_uci_move};
@@ -26,6 +27,7 @@ pub fn get_best_move(
     time_limit: Duration,
     total_clock: Option<Duration>,
     tt: &TranspositionTable,
+    shared: &SharedHistory,
     stop_flag: Arc<AtomicBool>,
     is_pondering: Arc<AtomicBool>,
     time_limit_ms: Arc<AtomicU64>,
@@ -69,13 +71,6 @@ pub fn get_best_move(
         time_limit_ms.clone(),
     );
 
-    for i in 0..64 {
-        for j in 0..64 {
-            info.history[i][j] /= 2;
-            info.cont_history[i][j] /= 2;
-        }
-    }
-
     let mut best_move: Option<Move> = None;
     let mut best_score = 0i32;
     let mut total_nodes: u64 = 0;
@@ -90,6 +85,15 @@ pub fn get_best_move(
     } else {
         1
     };
+
+    if is_main_thread {
+        shared.decay();
+    }
+
+    if history_hashes.last() == Some(&board.hash()) {
+        history_hashes.pop();
+    }
+
     for depth in start_depth..=MAX_DEPTH {
         info.nodes = 0;
 
@@ -103,12 +107,6 @@ pub fn get_best_move(
                     (info.time_limit * 8) / 10
                 };
                 info.deadline = Some(info.start_time + sl);
-            }
-            if depth > 1 {
-                let limit = info.time_limit;
-                if Instant::now() >= info.start_time + (limit * 4) / 10 {
-                    break;
-                }
             }
         }
 
@@ -134,6 +132,7 @@ pub fn get_best_move(
                 0,
                 &mut info,
                 tt,
+                shared,
                 history_hashes,
                 None,
                 network,

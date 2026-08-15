@@ -38,12 +38,14 @@ pub(crate) fn run_tactics(tt: &TranspositionTable, network: &Network) {
         tt.new_search();
         println!("Testing {}...", name);
         let mut hist = Vec::new();
-        let no_book: Arc<Option<PolyglotBook>> = Arc::new(None);
+        let no_book: Option<PolyglotBook> = None;
+        let shared = crate::search::SharedHistory::new();
         let (best, _) = crate::search::get_best_move(
             &b,
             Duration::from_millis(1000),
             Some(Duration::from_millis(1000)),
             &tt,
+            &shared,
             stop_flag,
             is_pondering,
             time_limit_ms,

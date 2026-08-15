@@ -88,7 +88,16 @@ pub(crate) fn all_attackers_to(board: &Board, sq: Square, occupied: BitBoard) ->
 pub(crate) fn see(board: &Board, m: Move) -> i32 {
     let mut gains = [0i32; 32];
 
-    let victim = board.piece_on(m.to).map(piece_value).unwrap_or(0);
+    let is_ep = board.piece_on(m.from) == Some(Piece::Pawn)
+        && m.from.file() != m.to.file()
+        && board.color_on(m.to).is_none();
+
+    let victim = if is_ep {
+        piece_value(Piece::Pawn)
+    } else {
+        board.piece_on(m.to).map(piece_value).unwrap_or(0)
+    };
+
     let promo = m
         .promotion
         .map(|p| piece_value(p) - piece_value(Piece::Pawn))
@@ -102,6 +111,10 @@ pub(crate) fn see(board: &Board, m: Move) -> i32 {
 
     let mut occupied = board.occupied();
     occupied &= !m.from.bitboard();
+    if is_ep {
+        let ep_sq = Square::new(m.to.file(), m.from.rank());
+        occupied &= !ep_sq.bitboard();
+    }
 
     let mut attackers = all_attackers_to(board, m.to, occupied);
     let mut current_color = !board.side_to_move();

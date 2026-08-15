@@ -20,7 +20,9 @@ pub fn parse_uci_move(board: &Board, m_str: &str) -> Option<Move> {
 
 pub fn format_uci_move(board: &Board, m: Move) -> String {
     let mut out_move = m;
-    if board.piece_on(m.from) == Some(Piece::King) {
+    let is_castling = board.piece_on(m.from) == Some(Piece::King)
+        && !(board.colors(board.side_to_move()) & m.to.bitboard()).is_empty();
+    if is_castling {
         let from_str = m.from.to_string();
         let to_str = m.to.to_string();
         if from_str == "e1" && to_str == "h1" {
