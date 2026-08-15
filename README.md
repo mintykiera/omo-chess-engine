@@ -16,11 +16,11 @@ Play against OMO on Lichess: [lichess.org/@/omo-engine](https://lichess.org/@/om
 
 OMO has been benchmarked across **300-game tournament matches** against calibrated Stockfish skill level baselines (900 games total):
 
-| Opponent Baseline                          |  Record (300 Games)   |       Score Rate        |   Elo Diff   | Estimated Performance | Draw Rate |
-| :----------------------------------------- | :-------------------: | :---------------------: | :----------: | :-------------------: | :-------: |
-| **Stockfish (Skill Level 15 • ~3070 Elo)** | **200W – 67L – 33D**  | **72.2%** (216.5 / 300) |    ~+164     |     **~3234 Elo**     |   11.0%   |
-| **Stockfish (Skill Level 16 • ~3111 Elo)** | **154W – 75L – 71D**  | **63.2%** (189.5 / 300) |     ~+95     |     **~3206 Elo**     |   23.7%   |
-| **Stockfish (Skill Level 17 • ~3141 Elo)** | **105W – 84L – 111D** | **53.5%** (160.5 / 300) | +24.4 ± 31.3 |     **~3165 Elo**     |   37.0%   |
+| Opponent Baseline                          |  Record (300 Games)   |       Score Rate        |   Elo Diff    | Estimated Performance | Draw Rate |
+| :----------------------------------------- | :-------------------: | :---------------------: | :-----------: | :-------------------: | :-------: |
+| **Stockfish (Skill Level 15 • ~3070 Elo)** | **200W – 67L – 33D**  | **72.2%** (216.5 / 300) | +165.5 ± 40.8 |     **~3235 Elo**     |   11.0%   |
+| **Stockfish (Skill Level 16 • ~3111 Elo)** | **154W – 75L – 71D**  | **63.2%** (189.5 / 300) | +93.7 ± 35.3  |     **~3205 Elo**     |   23.7%   |
+| **Stockfish (Skill Level 17 • ~3141 Elo)** | **105W – 84L – 111D** | **53.5%** (160.5 / 300) | +24.4 ± 31.3  |     **~3165 Elo**     |   37.0%   |
 
 ### Detailed Match Breakdowns
 
@@ -29,11 +29,11 @@ OMO has been benchmarked across **300-game tournament matches** against calibrat
 | Metric                    | Result                                 |
 | :------------------------ | :------------------------------------- |
 | **Opponent**              | Stockfish (Skill Level 15 • ~3070 Elo) |
-| **Record**                | **200W / 67L / 33D** (300 games)       |
-| **Score Rate**            | **72.2%** (216.5 / 300)                |
-| **Elo Difference**        | **+165.5 ± 40.8**                      |
-| **Estimated Performance** | **~3235 Elo**                          |
-| **Draw Ratio**            | **11.0%**                              |
+| **Record**                | 200W / 67L / 33D                       |
+| **Score Rate**            | 72.2% (216.5 / 300)                    |
+| **Elo Difference**        | +165.5 ± 40.8                          |
+| **Estimated Performance** | ~3235 Elo                              |
+| **Draw Ratio**            | 11.0%                                  |
 | **Color Splits**          | White: 79.5% • Black: 64.8%            |
 
 #### Stockfish Skill Level 16 (~3111 Elo Baseline)
@@ -41,11 +41,11 @@ OMO has been benchmarked across **300-game tournament matches** against calibrat
 | Metric                    | Result                                 |
 | :------------------------ | :------------------------------------- |
 | **Opponent**              | Stockfish (Skill Level 16 • ~3111 Elo) |
-| **Record**                | **154W / 75L / 71D** (300 games)       |
-| **Score Rate**            | **63.2%** (189.5 / 300)                |
-| **Elo Difference**        | **+93.7 ± 35.3**                       |
-| **Estimated Performance** | **~3205 Elo**                          |
-| **Draw Ratio**            | **23.7%**                              |
+| **Record**                | 154W / 75L / 71D                       |
+| **Score Rate**            | 63.2% (189.5 / 300)                    |
+| **Elo Difference**        | +93.7 ± 35.3                           |
+| **Estimated Performance** | ~3205 Elo                              |
+| **Draw Ratio**            | 23.7%                                  |
 | **Color Splits**          | White: 66.7% • Black: 59.7%            |
 
 #### Stockfish Skill Level 17 (~3141 Elo Baseline)
@@ -53,11 +53,11 @@ OMO has been benchmarked across **300-game tournament matches** against calibrat
 | Metric                    | Result                                 |
 | :------------------------ | :------------------------------------- |
 | **Opponent**              | Stockfish (Skill Level 17 • ~3141 Elo) |
-| **Record**                | **105W / 84L / 111D** (300 games)      |
-| **Score Rate**            | **53.5%** (160.5 / 300)                |
-| **Elo Difference**        | **+24.4 ± 31.3**                       |
-| **Estimated Performance** | **~3165 Elo**                          |
-| **Draw Ratio**            | **37.0%**                              |
+| **Record**                | 105W / 84L / 111D                      |
+| **Score Rate**            | 53.5% (160.5 / 300)                    |
+| **Elo Difference**        | +24.4 ± 31.3                           |
+| **Estimated Performance** | ~3165 Elo                              |
+| **Draw Ratio**            | 37.0%                                  |
 | **Color Splits**          | White: 58.3% • Black: 48.7%            |
 
 ---
