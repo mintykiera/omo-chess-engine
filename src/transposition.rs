@@ -198,8 +198,14 @@ impl TranspositionTable {
 
         for entry in &bucket.entries {
             if entry.data1.load(Ordering::Acquire) == hash {
+                let old_d2 = entry.data2.load(Ordering::Acquire) ^ hash;
+                let (_, _, old_mv, _, _) = unpack_data2(old_d2);
+                let move_to_store = best_move.or(old_mv);
+                let new_d2 = pack_data2(score, depth, move_to_store, node_type, current_age);
+                let new_xor_d2 = new_d2 ^ hash;
+
                 entry.data1.store(0, Ordering::Release);
-                entry.data2.store(xor_d2, Ordering::Release);
+                entry.data2.store(new_xor_d2, Ordering::Release);
                 entry.data1.store(hash, Ordering::Release);
                 return;
             }

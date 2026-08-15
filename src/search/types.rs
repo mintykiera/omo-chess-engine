@@ -11,20 +11,32 @@ pub(crate) const MAX_EXTENSIONS: i32 = 3;
 
 pub struct SharedHistory {
     pub killers: [[AtomicU32; 2]; MAX_PLY],
-    pub history: [[AtomicI32; 64]; 64],
+    pub history: [[[AtomicI32; 64]; 64]; 2],
     pub cont_history: [[AtomicI32; 64]; 64],
+    pub counter_moves: [[[AtomicU32; 64]; 64]; 2],
+    pub capture_history: [[[AtomicI32; 64]; 64]; 2],
 }
 
 impl SharedHistory {
     pub fn new() -> Self {
         let killers = std::array::from_fn(|_| [AtomicU32::new(0), AtomicU32::new(0)]);
-        let history = std::array::from_fn(|_| std::array::from_fn(|_| AtomicI32::new(0)));
+        let history = std::array::from_fn(|_| {
+            std::array::from_fn(|_| std::array::from_fn(|_| AtomicI32::new(0)))
+        });
         let cont_history = std::array::from_fn(|_| std::array::from_fn(|_| AtomicI32::new(0)));
+        let counter_moves = std::array::from_fn(|_| {
+            std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0)))
+        });
+        let capture_history = std::array::from_fn(|_| {
+            std::array::from_fn(|_| std::array::from_fn(|_| AtomicI32::new(0)))
+        });
 
         Self {
             killers,
             history,
             cont_history,
+            counter_moves,
+            capture_history,
         }
     }
 
@@ -33,19 +45,35 @@ impl SharedHistory {
             self.killers[i][0].store(0, Ordering::Relaxed);
             self.killers[i][1].store(0, Ordering::Relaxed);
         }
+        for c in 0..2 {
+            for i in 0..64 {
+                for j in 0..64 {
+                    self.history[c][i][j].store(0, Ordering::Relaxed);
+                    self.counter_moves[c][i][j].store(0, Ordering::Relaxed);
+                    self.capture_history[c][i][j].store(0, Ordering::Relaxed);
+                }
+            }
+        }
         for i in 0..64 {
             for j in 0..64 {
-                self.history[i][j].store(0, Ordering::Relaxed);
                 self.cont_history[i][j].store(0, Ordering::Relaxed);
             }
         }
     }
 
     pub fn decay(&self) {
+        for c in 0..2 {
+            for i in 0..64 {
+                for j in 0..64 {
+                    let h = self.history[c][i][j].load(Ordering::Relaxed);
+                    self.history[c][i][j].store(h / 2, Ordering::Relaxed);
+                    let ch = self.capture_history[c][i][j].load(Ordering::Relaxed);
+                    self.capture_history[c][i][j].store(ch / 2, Ordering::Relaxed);
+                }
+            }
+        }
         for i in 0..64 {
             for j in 0..64 {
-                let h = self.history[i][j].load(Ordering::Relaxed);
-                self.history[i][j].store(h / 2, Ordering::Relaxed);
                 let c = self.cont_history[i][j].load(Ordering::Relaxed);
                 self.cont_history[i][j].store(c / 2, Ordering::Relaxed);
             }
@@ -66,15 +94,17 @@ impl SharedHistory {
         }
     }
 
-    pub fn get_history(&self, from: Square, to: Square) -> i32 {
-        self.history[from as usize][to as usize].load(Ordering::Relaxed)
+    pub fn get_history(&self, color: cozy_chess::Color, from: Square, to: Square) -> i32 {
+        self.history[color as usize][from as usize][to as usize].load(Ordering::Relaxed)
     }
 
-    pub fn add_history(&self, from: Square, to: Square, bonus: i32) {
+    pub fn add_history(&self, color: cozy_chess::Color, from: Square, to: Square, bonus: i32) {
+        let c = color as usize;
         let f = from as usize;
         let t = to as usize;
-        let val = self.history[f][t].load(Ordering::Relaxed);
-        self.history[f][t].store((val + bonus).min(10_000), Ordering::Relaxed);
+        let val = self.history[c][f][t].load(Ordering::Relaxed);
+        let new_val = val + bonus - (val * bonus.abs()) / 16384;
+        self.history[c][f][t].store(new_val.clamp(-16384, 16384), Ordering::Relaxed);
     }
 
     pub fn get_cont_history(&self, prev_to: Square, curr_to: Square) -> i32 {
@@ -86,6 +116,46 @@ impl SharedHistory {
         let c = curr_to as usize;
         let val = self.cont_history[p][c].load(Ordering::Relaxed);
         self.cont_history[p][c].store((val + bonus).min(10_000), Ordering::Relaxed);
+    }
+
+    pub fn get_counter_move(&self, color: cozy_chess::Color, prev_move: Move) -> Option<Move> {
+        let c = color as usize;
+        let f = prev_move.from as usize;
+        let t = prev_move.to as usize;
+        let val = self.counter_moves[c][f][t].load(Ordering::Relaxed);
+        crate::transposition::unpack_move(val as u16)
+    }
+
+    pub fn update_counter_move(
+        &self,
+        color: cozy_chess::Color,
+        prev_move: Move,
+        counter_move: Move,
+    ) {
+        let c = color as usize;
+        let f = prev_move.from as usize;
+        let t = prev_move.to as usize;
+        let val = crate::transposition::pack_move(Some(counter_move)) as u32;
+        self.counter_moves[c][f][t].store(val, Ordering::Relaxed);
+    }
+
+    pub fn get_capture_history(&self, color: cozy_chess::Color, from: Square, to: Square) -> i32 {
+        self.capture_history[color as usize][from as usize][to as usize].load(Ordering::Relaxed)
+    }
+
+    pub fn add_capture_history(
+        &self,
+        color: cozy_chess::Color,
+        from: Square,
+        to: Square,
+        bonus: i32,
+    ) {
+        let c = color as usize;
+        let f = from as usize;
+        let t = to as usize;
+        let val = self.capture_history[c][f][t].load(Ordering::Relaxed);
+        let new_val = val + bonus - (val * bonus.abs()) / 16384;
+        self.capture_history[c][f][t].store(new_val.clamp(-16384, 16384), Ordering::Relaxed);
     }
 }
 
@@ -144,9 +214,11 @@ impl MoveStack {
 #[derive(Clone, Copy, PartialEq)]
 enum Stage {
     TtMove,
-    Captures,
+    GoodCaptures,
     Killers,
+    Countermove,
     Quiets,
+    BadCaptures,
     Done,
 }
 
@@ -154,24 +226,35 @@ pub(crate) struct StagedMovePicker<'a> {
     stack: &'a MoveStack,
     tt_move: Option<Move>,
     killers: [Option<Move>; 2],
+    counter_move: Option<Move>,
     stage: Stage,
     current_index: usize,
     scores: [i32; 256],
     scored_captures: bool,
     scored_quiets: bool,
+    bad_captures: MoveStack,
+    bad_capture_scores: [i32; 256],
 }
 
 impl<'a> StagedMovePicker<'a> {
-    pub fn new(stack: &'a MoveStack, tt_move: Option<Move>, killers: [Option<Move>; 2]) -> Self {
+    pub fn new(
+        stack: &'a MoveStack,
+        tt_move: Option<Move>,
+        killers: [Option<Move>; 2],
+        counter_move: Option<Move>,
+    ) -> Self {
         Self {
             stack,
             tt_move,
             killers,
+            counter_move,
             stage: Stage::TtMove,
             current_index: 0,
             scores: [i32::MIN; 256],
             scored_captures: false,
             scored_quiets: false,
+            bad_captures: MoveStack::new(),
+            bad_capture_scores: [i32::MIN; 256],
         }
     }
 
@@ -185,16 +268,17 @@ impl<'a> StagedMovePicker<'a> {
         loop {
             match self.stage {
                 Stage::TtMove => {
-                    self.stage = Stage::Captures;
+                    self.stage = Stage::GoodCaptures;
                     if let Some(tm) = self.tt_move {
                         if let Some(idx) = self.stack.as_slice().iter().position(|&m| m == tm) {
                             return Some((tm, idx));
                         }
                     }
                 }
-                Stage::Captures => {
+                Stage::GoodCaptures => {
                     if !self.scored_captures {
                         self.scored_captures = true;
+                        let color = board.side_to_move();
                         for (i, &m) in self.stack.as_slice().iter().enumerate() {
                             if Some(m) == self.tt_move {
                                 continue;
@@ -215,8 +299,12 @@ impl<'a> StagedMovePicker<'a> {
                                     .unwrap_or(100);
                                 let promo_val =
                                     m.promotion.map(crate::eval::piece_value).unwrap_or(0);
-                                self.scores[i] =
+                                let mut score =
                                     100_000 + victim_val * 10 - attacker_val + promo_val * 10;
+                                if is_cap {
+                                    score += shared.get_capture_history(color, m.from, m.to) / 32;
+                                }
+                                self.scores[i] = score;
                             }
                         }
                     }
@@ -232,7 +320,34 @@ impl<'a> StagedMovePicker<'a> {
 
                     if let Some(idx) = best_idx {
                         self.scores[idx] = i32::MIN;
-                        return Some((self.stack.moves[idx], idx));
+                        let m = self.stack.moves[idx];
+
+                        let is_ep = board.piece_on(m.from) == Some(Piece::Pawn)
+                            && m.from.file() != m.to.file()
+                            && board.color_on(m.to).is_none();
+                        let victim_val = if is_ep {
+                            crate::eval::piece_value(Piece::Pawn)
+                        } else {
+                            board
+                                .piece_on(m.to)
+                                .map(crate::eval::piece_value)
+                                .unwrap_or(0)
+                        };
+                        let attacker_val = board
+                            .piece_on(m.from)
+                            .map(crate::eval::piece_value)
+                            .unwrap_or(100);
+
+                        // Optimization: if victim > attacker, it's immediately good
+                        if victim_val > attacker_val || crate::search::see::see(board, m) >= 0 {
+                            return Some((m, idx));
+                        } else {
+                            // Bad capture, push to bad_captures for later
+                            self.bad_captures.push(m);
+                            let bc_idx = self.bad_captures.len - 1;
+                            self.bad_capture_scores[bc_idx] = best_score;
+                            // continue loop to find next best capture
+                        }
                     } else {
                         self.stage = Stage::Killers;
                         self.current_index = 0;
@@ -240,10 +355,15 @@ impl<'a> StagedMovePicker<'a> {
                 }
                 Stage::Killers => {
                     if self.current_index < 2 {
-                        let k = self.killers[self.current_index];
+                        let km = self.killers[self.current_index];
                         self.current_index += 1;
-                        if let Some(km) = k {
+                        if let Some(km) = km {
+                            // Deduplicate against TT move
                             if Some(km) != self.tt_move {
+                                // Deduplicate Killer 2 against Killer 1
+                                if self.current_index == 2 && self.killers[0] == Some(km) {
+                                    continue;
+                                }
                                 if let Some(idx) =
                                     self.stack.as_slice().iter().position(|&m| m == km)
                                 {
@@ -252,6 +372,7 @@ impl<'a> StagedMovePicker<'a> {
                                             && km.from.file() != km.to.file()
                                             && board.color_on(km.to).is_none());
                                     let is_promo = km.promotion.is_some();
+                                    // Ensure it's a quiet pseudo-legal move
                                     if !is_cap && !is_promo {
                                         return Some((km, idx));
                                     }
@@ -259,14 +380,38 @@ impl<'a> StagedMovePicker<'a> {
                             }
                         }
                     } else {
-                        self.stage = Stage::Quiets;
+                        self.stage = Stage::Countermove;
+                    }
+                }
+                Stage::Countermove => {
+                    self.stage = Stage::Quiets;
+                    if let Some(cm) = self.counter_move {
+                        if Some(cm) != self.tt_move
+                            && Some(cm) != self.killers[0]
+                            && Some(cm) != self.killers[1]
+                        {
+                            if let Some(idx) = self.stack.as_slice().iter().position(|&m| m == cm) {
+                                let is_cap = board.color_on(cm.to).is_some()
+                                    || (board.piece_on(cm.from) == Some(Piece::Pawn)
+                                        && cm.from.file() != cm.to.file()
+                                        && board.color_on(cm.to).is_none());
+                                let is_promo = cm.promotion.is_some();
+                                if !is_cap && !is_promo {
+                                    return Some((cm, idx));
+                                }
+                            }
+                        }
                     }
                 }
                 Stage::Quiets => {
                     if !self.scored_quiets {
                         self.scored_quiets = true;
+                        let color = board.side_to_move();
                         for (i, &m) in self.stack.as_slice().iter().enumerate() {
-                            if Some(m) == self.tt_move || self.killers.contains(&Some(m)) {
+                            if Some(m) == self.tt_move
+                                || self.killers.contains(&Some(m))
+                                || Some(m) == self.counter_move
+                            {
                                 continue;
                             }
                             let is_cap = board.color_on(m.to).is_some()
@@ -275,7 +420,7 @@ impl<'a> StagedMovePicker<'a> {
                                     && board.color_on(m.to).is_none());
                             let is_promo = m.promotion.is_some();
                             if !is_cap && !is_promo {
-                                let mut score = shared.get_history(m.from, m.to);
+                                let mut score = shared.get_history(color, m.from, m.to);
                                 if let Some(pm) = prev_move {
                                     score += shared.get_cont_history(pm.to, m.to);
                                 }
@@ -298,6 +443,31 @@ impl<'a> StagedMovePicker<'a> {
                     if let Some(idx) = best_idx {
                         self.scores[idx] = i32::MIN;
                         return Some((self.stack.moves[idx], idx));
+                    } else {
+                        self.stage = Stage::BadCaptures;
+                        self.current_index = 0;
+                    }
+                }
+                Stage::BadCaptures => {
+                    let mut best_bc_idx = None;
+                    let mut best_score = i32::MIN;
+                    for (i, &score) in self.bad_capture_scores[..self.bad_captures.len]
+                        .iter()
+                        .enumerate()
+                    {
+                        if score > best_score {
+                            best_score = score;
+                            best_bc_idx = Some(i);
+                        }
+                    }
+
+                    if let Some(bc_idx) = best_bc_idx {
+                        self.bad_capture_scores[bc_idx] = i32::MIN;
+                        let m = self.bad_captures.moves[bc_idx];
+                        // Need to find original index in stack
+                        if let Some(idx) = self.stack.as_slice().iter().position(|&sm| sm == m) {
+                            return Some((m, idx));
+                        }
                     } else {
                         self.stage = Stage::Done;
                     }
@@ -383,12 +553,7 @@ impl SearchInfo {
             }
 
             if let Some(dl) = self.deadline {
-                let now = Instant::now();
-                if now >= dl {
-                    self.aborted = true;
-                    return;
-                }
-                if dl.duration_since(now) < Duration::from_millis(50) {
+                if Instant::now() >= dl {
                     self.aborted = true;
                     return;
                 }

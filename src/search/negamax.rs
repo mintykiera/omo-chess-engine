@@ -193,15 +193,25 @@ pub(crate) fn negamax(
         (depth, extensions)
     };
 
+    let static_eval = if !in_check {
+        network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move())
+    } else {
+        -MATE_SCORE
+    };
+
     if !in_check && ply > 0 && depth <= 3 && excluded_move.is_none() {
-        let static_eval =
-            network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move());
         if static_eval - 120 * depth >= beta {
             return (beta, None);
         }
     }
 
-    if !in_check && ply > 0 && depth >= 3 && excluded_move.is_none() {
+    if !in_check
+        && ply > 0
+        && depth >= 3
+        && excluded_move.is_none()
+        && prev_move.is_some()
+        && static_eval >= beta
+    {
         let our_pieces = (board.pieces(Piece::Knight)
             | board.pieces(Piece::Bishop)
             | board.pieces(Piece::Rook)
@@ -209,7 +219,7 @@ pub(crate) fn negamax(
             & board.colors(board.side_to_move());
         if our_pieces.len() > 0 {
             if let Some(null_board) = board.null_move() {
-                let r = if depth >= 6 { 3 } else { 2 };
+                let r = 3 + depth / 6;
                 history_hashes.push(hash);
                 let (raw, _) = negamax(
                     &null_board,
@@ -287,8 +297,9 @@ pub(crate) fn negamax(
 
     let mut tt_move = tt_entry.and_then(|e| e.best_move);
 
-    if depth >= 4 && !in_check && tt_move.is_none() && excluded_move.is_none() {
-        let iid_depth = depth - 2;
+    let is_pv = beta - alpha > 1;
+    if is_pv && depth >= 6 && !in_check && tt_move.is_none() && excluded_move.is_none() {
+        let iid_depth = depth - 3;
         let _ = negamax(
             board,
             iid_depth,
@@ -331,8 +342,6 @@ pub(crate) fn negamax(
 
     let mut futility_pruning = false;
     if !in_check && depth <= 4 && ply > 0 {
-        let static_eval =
-            network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move());
         if static_eval + (depth * 100) <= alpha {
             futility_pruning = true;
         }
@@ -346,11 +355,14 @@ pub(crate) fn negamax(
         [None, None]
     };
 
-    let mut picker = StagedMovePicker::new(&move_stack, tt_move, killers);
+    let counter_move = prev_move.and_then(|pm| shared.get_counter_move(board.side_to_move(), pm));
+
+    let mut picker = StagedMovePicker::new(&move_stack, tt_move, killers, counter_move);
     let mut best_move: Option<Move> = None;
     let mut best_score = -MATE_SCORE;
     let mut move_index = 0usize;
     let mut quiet_moves_searched = 0i32;
+    let mut searched_quiets = MoveStack::new();
 
     while let Some((m, _)) = picker.pick_next(board, shared, prev_move) {
         if excluded_move == Some(m) {
@@ -378,6 +390,7 @@ pub(crate) fn negamax(
 
         if is_quiet {
             quiet_moves_searched += 1;
+            searched_quiets.push(m);
         }
 
         let mut child_acc = network.empty_accumulator();
@@ -431,7 +444,10 @@ pub(crate) fn negamax(
                 && !is_killer;
             if do_lmr {
                 let r = lmr_reduction(depth, move_index as i32);
-                reduced_depth = (depth - 1 - r).max(1);
+                let history_score = shared.get_history(board.side_to_move(), m.from, m.to);
+                let history_adjustment = history_score / 4096;
+                let final_r = (r - history_adjustment).max(0);
+                reduced_depth = (depth - 1 + singular_ext - final_r).max(1);
             }
 
             history_hashes.push(hash);
@@ -491,16 +507,36 @@ pub(crate) fn negamax(
             alpha = score;
         }
         if alpha >= beta {
-            if board.color_on(m.to).is_none() {
+            let color = board.side_to_move();
+            let bonus = (depth * depth * 16).min(300);
+
+            if is_quiet {
                 if ply_idx < MAX_PLY {
                     shared.update_killer(ply_idx, m);
                 }
-                let bonus = depth * depth;
-                shared.add_history(m.from, m.to, bonus);
+
+                if let Some(pm) = prev_move {
+                    shared.update_counter_move(color, pm, m);
+                }
+
+                shared.add_history(color, m.from, m.to, bonus);
+
+                for &qm in searched_quiets.as_slice() {
+                    if qm != m {
+                        shared.add_history(color, qm.from, qm.to, -bonus);
+                    }
+                }
 
                 if let Some(pm) = prev_move {
                     shared.add_cont_history(pm.to, m.to, bonus);
+                    for &qm in searched_quiets.as_slice() {
+                        if qm != m {
+                            shared.add_cont_history(pm.to, qm.to, -bonus);
+                        }
+                    }
                 }
+            } else {
+                shared.add_capture_history(color, m.from, m.to, bonus);
             }
             break;
         }

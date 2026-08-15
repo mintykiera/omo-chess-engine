@@ -11,7 +11,7 @@ use cozy_chess::{Board, Move};
 use nnue_rs::Network;
 use polyglot_book_rs::PolyglotBook;
 use shakmaty::Chess;
-use shakmaty_syzygy::Tablebase;
+use shakmaty_syzygy::{Tablebase, Wdl};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -76,6 +76,55 @@ pub fn get_best_move(
     let mut total_nodes: u64 = 0;
     let root_acc = network.accumulator(&crate::eval::OmoBoard(board));
 
+    if let Some(tb) = syzygy {
+        let piece_count =
+            (board.colors(cozy_chess::Color::White) | board.colors(cozy_chess::Color::Black)).len();
+        if piece_count <= 6 {
+            let mut best_syz_move = None;
+            let mut best_wdl: shakmaty_syzygy::AmbiguousWdl = Wdl::Win.into();
+            let mut best_dtz = i32::MIN;
+
+            board.generate_moves(|moves| {
+                for m in moves {
+                    let mut next_board = board.clone();
+                    next_board.play_unchecked(m);
+                    let fen = next_board.to_string();
+                    if let Ok(epd) = fen.parse::<shakmaty::fen::Epd>() {
+                        if let Ok(shak_board) =
+                            epd.into_position::<shakmaty::Chess>(shakmaty::CastlingMode::Standard)
+                        {
+                            if let Ok(wdl) = tb.probe_wdl(&shak_board) {
+                                if let Ok(dtz) = tb.probe_dtz(&shak_board) {
+                                    let dtz_exact = match dtz {
+                                        shakmaty_syzygy::MaybeRounded::Precise(d) => d,
+                                        shakmaty_syzygy::MaybeRounded::Rounded(d) => d,
+                                    };
+                                    let dtz_val: i32 = i32::from(dtz_exact);
+                                    if wdl < best_wdl || (wdl == best_wdl && dtz_val > best_dtz) {
+                                        best_wdl = wdl;
+                                        best_dtz = dtz_val;
+                                        best_syz_move = Some(m);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                false
+            });
+
+            if let Some(m) = best_syz_move {
+                if is_main_thread {
+                    println!(
+                        "info string Root Syzygy probe hit: WDL {:?} DTZ {}",
+                        best_wdl, best_dtz
+                    );
+                }
+                return (Some(m), None);
+            }
+        }
+    }
+
     let mut stable_count: i32 = 0;
     let mut prev_best_move: Option<Move> = None;
     let mut prev_score: i32 = 0;
@@ -110,14 +159,14 @@ pub fn get_best_move(
             }
         }
 
-        let mut window = 25;
-        let mut alpha = if depth > 1 {
-            best_score - window
+        let mut window = if depth >= 4 { 20 } else { MATE_SCORE };
+        let mut alpha = if depth >= 4 {
+            (best_score - window).max(-MATE_SCORE)
         } else {
             -MATE_SCORE
         };
-        let mut beta = if depth > 1 {
-            best_score + window
+        let mut beta = if depth >= 4 {
+            (best_score + window).min(MATE_SCORE)
         } else {
             MATE_SCORE
         };
@@ -148,9 +197,17 @@ pub fn get_best_move(
             if score <= alpha && alpha > -MATE_SCORE {
                 alpha = (score - window).max(-MATE_SCORE);
                 window = window.saturating_mul(2);
+                if window > 400 || alpha <= -MATE_SCORE {
+                    alpha = -MATE_SCORE;
+                    beta = MATE_SCORE;
+                }
             } else if score >= beta && beta < MATE_SCORE {
                 beta = (score + window).min(MATE_SCORE);
                 window = window.saturating_mul(2);
+                if window > 400 || beta >= MATE_SCORE {
+                    alpha = -MATE_SCORE;
+                    beta = MATE_SCORE;
+                }
             } else {
                 break (score, mv);
             }
