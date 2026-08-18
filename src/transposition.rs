@@ -133,7 +133,7 @@ impl TranspositionTable {
         let count = if count < 2 {
             1
         } else {
-            1usize << (usize::BITS - 1 - (count - 1).leading_zeros())
+            1usize << (usize::BITS - 1 - count.leading_zeros())
         };
 
         let mut table = Vec::with_capacity(count);

@@ -8,6 +8,6 @@ pub fn piece_value(p: cozy_chess::Piece) -> i32 {
         cozy_chess::Piece::Bishop => 320,
         cozy_chess::Piece::Rook => 500,
         cozy_chess::Piece::Queen => 900,
-        cozy_chess::Piece::King => 0,
+        cozy_chess::Piece::King => 20_000,
     }
 }

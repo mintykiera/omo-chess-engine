@@ -20,7 +20,7 @@ use crate::transposition::TranspositionTable;
 use crate::uci::{format_uci_move, parse_uci_move};
 use negamax::negamax;
 use pv::extract_pv;
-use types::{MATE_SCORE, MAX_DEPTH};
+use types::{MATE_SCORE, MATE_THRESHOLD, MAX_DEPTH};
 
 pub fn get_best_move(
     board: &Board,
@@ -81,8 +81,8 @@ pub fn get_best_move(
             (board.colors(cozy_chess::Color::White) | board.colors(cozy_chess::Color::Black)).len();
         if piece_count <= 6 {
             let mut best_syz_move = None;
-            let mut best_wdl: shakmaty_syzygy::AmbiguousWdl = Wdl::Win.into();
-            let mut best_dtz = i32::MIN;
+            let mut best_wdl: Option<shakmaty_syzygy::AmbiguousWdl> = None;
+            let mut best_dtz = i32::MAX;
 
             board.generate_moves(|moves| {
                 for m in moves {
@@ -94,14 +94,32 @@ pub fn get_best_move(
                             epd.into_position::<shakmaty::Chess>(shakmaty::CastlingMode::Standard)
                         {
                             if let Ok(wdl) = tb.probe_wdl(&shak_board) {
-                                if let Ok(dtz) = tb.probe_dtz(&shak_board) {
-                                    let dtz_exact = match dtz {
-                                        shakmaty_syzygy::MaybeRounded::Precise(d) => d,
-                                        shakmaty_syzygy::MaybeRounded::Rounded(d) => d,
+                                if wdl <= Wdl::BlessedLoss.into() {
+                                    let dtz_val: i32 = if let Ok(dtz) = tb.probe_dtz(&shak_board) {
+                                        let dtz_exact = match dtz {
+                                            shakmaty_syzygy::MaybeRounded::Precise(d) => d,
+                                            shakmaty_syzygy::MaybeRounded::Rounded(d) => d,
+                                        };
+                                        i32::from(dtz_exact).abs()
+                                    } else {
+                                        i32::MAX
                                     };
-                                    let dtz_val: i32 = i32::from(dtz_exact);
-                                    if wdl < best_wdl || (wdl == best_wdl && dtz_val > best_dtz) {
-                                        best_wdl = wdl;
+
+                                    let is_better = match best_wdl {
+                                        None => true,
+                                        Some(bw) => {
+                                            if wdl < bw {
+                                                true
+                                            } else if wdl == bw && dtz_val < best_dtz {
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        }
+                                    };
+
+                                    if is_better {
+                                        best_wdl = Some(wdl);
                                         best_dtz = dtz_val;
                                         best_syz_move = Some(m);
                                     }
@@ -117,7 +135,8 @@ pub fn get_best_move(
                 if is_main_thread {
                     println!(
                         "info string Root Syzygy probe hit: WDL {:?} DTZ {}",
-                        best_wdl, best_dtz
+                        best_wdl.unwrap(),
+                        best_dtz
                     );
                 }
                 return (Some(m), None);
@@ -125,8 +144,6 @@ pub fn get_best_move(
         }
     }
 
-    let mut stable_count: i32 = 0;
-    let mut prev_best_move: Option<Move> = None;
     let mut prev_score: i32 = 0;
 
     let start_depth = if thread_id > 0 {
@@ -172,7 +189,7 @@ pub fn get_best_move(
         };
 
         let (score, current_move) = loop {
-            let (score, mv) = negamax(
+            let res = negamax(
                 board,
                 depth,
                 alpha,
@@ -191,8 +208,11 @@ pub fn get_best_move(
             );
 
             if info.aborted {
-                break (score, mv);
+                break (res.score, res.best_move);
             }
+
+            let score = res.score;
+            let mv = res.best_move;
 
             if score <= alpha && alpha > -MATE_SCORE {
                 alpha = (score - window).max(-MATE_SCORE);
@@ -227,13 +247,23 @@ pub fn get_best_move(
         let nps = ((total_nodes as u128) * 1000) / elapsed_ms;
 
         if is_main_thread {
+            let score_str = if best_score > MATE_THRESHOLD {
+                let mate_moves = (MATE_SCORE - best_score + 1) / 2;
+                format!("score mate {}", mate_moves)
+            } else if best_score < -MATE_THRESHOLD {
+                let mate_moves = (MATE_SCORE + best_score + 1) / 2;
+                format!("score mate -{}", mate_moves)
+            } else {
+                format!("score cp {}", best_score)
+            };
+
             println!(
-                "info depth {} time {} nodes {} nps {} score cp {} pv {}",
+                "info depth {} time {} nodes {} nps {} {} pv {}",
                 depth,
                 elapsed_ms,
                 total_nodes,
                 nps,
-                best_score,
+                score_str,
                 extract_pv(board, tt)
             );
         }
@@ -258,21 +288,6 @@ pub fn get_best_move(
             }
         }
         prev_score = score;
-
-        if depth > 1 {
-            if best_move == prev_best_move && best_move.is_some() {
-                stable_count += 1;
-            } else {
-                stable_count = 1;
-            }
-        } else {
-            stable_count = 1;
-        }
-        prev_best_move = best_move;
-
-        if depth >= 12 && stable_count >= 4 && best_score > 100 {
-            break;
-        }
 
         if score.abs() > MATE_SCORE - MAX_DEPTH {
             break;

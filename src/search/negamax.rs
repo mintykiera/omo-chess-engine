@@ -6,11 +6,28 @@ use shakmaty_syzygy::{Tablebase, Wdl};
 use super::ordering::lmr_reduction;
 use super::see::see;
 use super::types::{
-    MATE_SCORE, MAX_EXTENSIONS, MAX_PLY, MoveStack, SearchInfo, SharedHistory, StagedMovePicker,
-    score_from_tt, score_to_tt,
+    MATE_SCORE, MATE_THRESHOLD, MAX_EXTENSIONS, MAX_PLY, MoveStack, SearchInfo, SharedHistory,
+    StagedMovePicker, score_from_tt, score_to_tt,
 };
 use crate::eval::piece_value;
 use crate::transposition::{NodeType, TranspositionTable};
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SearchResult {
+    pub score: i32,
+    pub best_move: Option<Move>,
+    pub is_draw: bool,
+}
+
+impl SearchResult {
+    pub const fn new(score: i32, best_move: Option<Move>, is_draw: bool) -> Self {
+        Self {
+            score,
+            best_move,
+            is_draw,
+        }
+    }
+}
 
 pub(crate) fn negamax(
     board: &Board,
@@ -28,25 +45,26 @@ pub(crate) fn negamax(
     acc: &Accumulator,
     syzygy: &Option<Tablebase<Chess>>,
     excluded_move: Option<Move>,
-) -> (i32, Option<Move>) {
+) -> SearchResult {
     info.check_time();
     if info.aborted {
-        return (0, None);
+        return SearchResult::new(0, None, false);
     }
 
     info.nodes += 1;
 
     if ply >= (MAX_PLY as i32) - 1 {
-        return (
+        return SearchResult::new(
             network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move()),
             None,
+            false,
         );
     }
 
     let hash = board.hash();
     if ply > 0 {
         if board.halfmove_clock() >= 100 {
-            return (0, None);
+            return SearchResult::new(0, None, true);
         }
 
         let hc = board.halfmove_clock() as usize;
@@ -62,11 +80,11 @@ pub(crate) fn negamax(
             i += 2;
         }
         if is_repetition {
-            return (0, None);
+            return SearchResult::new(0, None, true);
         }
     }
 
-    if board.occupied().len() <= 6 && ply > 0 {
+    if board.occupied().len() <= 6 && ply > 0 && depth >= 2 && excluded_move.is_none() {
         if let Some(tb) = syzygy {
             let mut s_board = shakmaty::Board::empty();
             for &color in &[cozy_chess::Color::White, cozy_chess::Color::Black] {
@@ -143,11 +161,11 @@ pub(crate) fn negamax(
             if let Ok(pos) = shakmaty::Chess::from_setup(setup, CastlingMode::Standard) {
                 if let Ok(wdl) = tb.probe_wdl_after_zeroing(&pos) {
                     let egtb_score = match wdl {
-                        Wdl::Win => 20_000 - ply,
-                        Wdl::Loss => -20_000 + ply,
+                        Wdl::Win => (MATE_SCORE - 1000) - ply,
+                        Wdl::Loss => -(MATE_SCORE - 1000) + ply,
                         _ => 0,
                     };
-                    return (egtb_score, None);
+                    return SearchResult::new(egtb_score, None, false);
                 }
             }
         }
@@ -162,7 +180,7 @@ pub(crate) fn negamax(
                 let score = score_from_tt(entry.score, ply);
                 match entry.node_type {
                     NodeType::Exact => {
-                        return (score, entry.best_move);
+                        return SearchResult::new(score, entry.best_move, false);
                     }
                     NodeType::LowerBound => {
                         alpha = alpha.max(score);
@@ -172,16 +190,17 @@ pub(crate) fn negamax(
                     }
                 }
                 if alpha >= beta {
-                    return (score, entry.best_move);
+                    return SearchResult::new(score, entry.best_move, false);
                 }
             }
         }
     }
 
     if depth <= 0 {
-        return (
+        return SearchResult::new(
             quiescence_search(board, alpha, beta, info, network, acc),
             None,
+            false,
         );
     }
 
@@ -201,7 +220,7 @@ pub(crate) fn negamax(
 
     if !in_check && ply > 0 && depth <= 3 && excluded_move.is_none() {
         if static_eval - 120 * depth >= beta {
-            return (beta, None);
+            return SearchResult::new(beta, None, false);
         }
     }
 
@@ -221,7 +240,7 @@ pub(crate) fn negamax(
             if let Some(null_board) = board.null_move() {
                 let r = 3 + depth / 6;
                 history_hashes.push(hash);
-                let (raw, _) = negamax(
+                let res = negamax(
                     &null_board,
                     depth - 1 - r,
                     -beta,
@@ -240,11 +259,11 @@ pub(crate) fn negamax(
                 );
                 history_hashes.pop();
                 if info.aborted {
-                    return (0, None);
+                    return SearchResult::new(0, None, false);
                 }
-                let null_score = -raw;
+                let null_score = -res.score;
                 if null_score >= beta {
-                    return (beta, None);
+                    return SearchResult::new(beta, None, false);
                 }
             }
         }
@@ -255,41 +274,44 @@ pub(crate) fn negamax(
 
     if excluded_move.is_none() && depth >= 8 {
         if let Some(entry) = tt_entry {
-            if (entry.node_type == NodeType::Exact || entry.node_type == NodeType::LowerBound)
+            if entry.depth >= depth - 3
+                && (entry.node_type == NodeType::Exact || entry.node_type == NodeType::LowerBound)
                 && entry.best_move.is_some()
             {
                 let tt_m = entry.best_move.unwrap();
                 let tt_score = score_from_tt(entry.score, ply);
-                let margin = depth * 2;
-                let singular_beta = tt_score - margin;
-                let singular_alpha = singular_beta - 1;
-                let singular_depth = (depth - 1) / 2;
+                if tt_score.abs() < MATE_THRESHOLD {
+                    let margin = depth * 2;
+                    let singular_beta = tt_score - margin;
+                    let singular_alpha = singular_beta - 1;
+                    let singular_depth = (depth - 1) / 2;
 
-                let (sing_score, _) = negamax(
-                    board,
-                    singular_depth,
-                    singular_alpha,
-                    singular_beta,
-                    ply,
-                    extensions,
-                    info,
-                    tt,
-                    shared,
-                    history_hashes,
-                    prev_move,
-                    network,
-                    acc,
-                    syzygy,
-                    Some(tt_m),
-                );
+                    let sing_res = negamax(
+                        board,
+                        singular_depth,
+                        singular_alpha,
+                        singular_beta,
+                        ply,
+                        extensions,
+                        info,
+                        tt,
+                        shared,
+                        history_hashes,
+                        prev_move,
+                        network,
+                        acc,
+                        syzygy,
+                        Some(tt_m),
+                    );
 
-                if info.aborted {
-                    return (0, None);
-                }
+                    if info.aborted {
+                        return SearchResult::new(0, None, false);
+                    }
 
-                if sing_score <= singular_alpha {
-                    is_singular = true;
-                    singular_move = Some(tt_m);
+                    if sing_res.score <= singular_alpha {
+                        is_singular = true;
+                        singular_move = Some(tt_m);
+                    }
                 }
             }
         }
@@ -318,7 +340,7 @@ pub(crate) fn negamax(
             None,
         );
         if info.aborted {
-            return (0, None);
+            return SearchResult::new(0, None, false);
         }
         // Update the TT move with the result of the shallow search
         tt_move = tt.get(hash).and_then(|e| e.best_move);
@@ -334,9 +356,9 @@ pub(crate) fn negamax(
 
     if move_stack.is_empty() {
         if in_check {
-            return (-MATE_SCORE + (ply as i32), None);
+            return SearchResult::new(-MATE_SCORE + (ply as i32), None, false);
         } else {
-            return (0, None);
+            return SearchResult::new(0, None, false);
         }
     }
 
@@ -350,7 +372,7 @@ pub(crate) fn negamax(
     let ply_idx = ply as usize;
 
     let killers = if ply_idx < MAX_PLY {
-        [shared.get_killer(ply_idx, 0), shared.get_killer(ply_idx, 1)]
+        [info.get_killer(ply_idx, 0), info.get_killer(ply_idx, 1)]
     } else {
         [None, None]
     };
@@ -360,6 +382,7 @@ pub(crate) fn negamax(
     let mut picker = StagedMovePicker::new(&move_stack, tt_move, killers, counter_move);
     let mut best_move: Option<Move> = None;
     let mut best_score = -MATE_SCORE;
+    let mut best_score_tainted = false;
     let mut move_index = 0usize;
     let mut quiet_moves_searched = 0i32;
     let mut searched_quiets = MoveStack::new();
@@ -409,10 +432,11 @@ pub(crate) fn negamax(
         };
 
         let mut score;
+        let mut score_tainted;
 
         if move_index == 0 {
             history_hashes.push(hash);
-            let (raw, _) = negamax(
+            let res = negamax(
                 &next_board,
                 depth - 1 + singular_ext,
                 -beta,
@@ -430,12 +454,11 @@ pub(crate) fn negamax(
                 None,
             );
             history_hashes.pop();
-            score = -raw;
+            score = -res.score;
+            score_tainted = res.is_draw;
         } else {
             let mut reduced_depth = depth - 1 + singular_ext;
-            let is_killer = ply_idx < MAX_PLY
-                && (shared.get_killer(ply_idx, 0) == Some(m)
-                    || shared.get_killer(ply_idx, 1) == Some(m));
+            let is_killer = ply_idx < MAX_PLY && (killers[0] == Some(m) || killers[1] == Some(m));
             let do_lmr = move_index >= 3
                 && depth >= 3
                 && !is_capture
@@ -451,7 +474,7 @@ pub(crate) fn negamax(
             }
 
             history_hashes.push(hash);
-            let (raw, _) = negamax(
+            let res = negamax(
                 &next_board,
                 reduced_depth,
                 -alpha - 1,
@@ -468,11 +491,12 @@ pub(crate) fn negamax(
                 syzygy,
                 None,
             );
-            score = -raw;
+            score = -res.score;
+            score_tainted = res.is_draw;
 
             if score > alpha {
                 if do_lmr || score < beta {
-                    let (raw, _) = negamax(
+                    let full_res = negamax(
                         &next_board,
                         depth - 1 + singular_ext,
                         -beta,
@@ -489,19 +513,21 @@ pub(crate) fn negamax(
                         syzygy,
                         None,
                     );
-                    score = -raw;
+                    score = -full_res.score;
+                    score_tainted = full_res.is_draw;
                 }
             }
             history_hashes.pop();
         }
 
         if info.aborted {
-            return (0, None);
+            return SearchResult::new(0, None, false);
         }
 
         if score > best_score {
             best_score = score;
             best_move = Some(m);
+            best_score_tainted = score_tainted;
         }
         if score > alpha {
             alpha = score;
@@ -512,7 +538,7 @@ pub(crate) fn negamax(
 
             if is_quiet {
                 if ply_idx < MAX_PLY {
-                    shared.update_killer(ply_idx, m);
+                    info.update_killer(ply_idx, m);
                 }
 
                 if let Some(pm) = prev_move {
@@ -548,7 +574,7 @@ pub(crate) fn negamax(
         best_score = alpha;
     }
 
-    if excluded_move.is_none() {
+    if excluded_move.is_none() && !best_score_tainted {
         let node_type = if best_score <= original_alpha {
             NodeType::UpperBound
         } else if best_score >= beta {
@@ -565,7 +591,7 @@ pub(crate) fn negamax(
         );
     }
 
-    (best_score, best_move)
+    SearchResult::new(best_score, best_move, best_score_tainted)
 }
 
 pub(crate) fn quiescence_search(
@@ -598,7 +624,7 @@ pub(crate) fn quiescence_search(
             alpha = stand_pat;
         }
 
-        const BIG_DELTA: i32 = 1000;
+        const BIG_DELTA: i32 = 1800;
         if stand_pat + BIG_DELTA < alpha {
             return alpha;
         }

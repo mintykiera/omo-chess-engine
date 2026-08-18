@@ -10,7 +10,6 @@ pub(crate) const MAX_PLY: usize = 128;
 pub(crate) const MAX_EXTENSIONS: i32 = 3;
 
 pub struct SharedHistory {
-    pub killers: [[AtomicU32; 2]; MAX_PLY],
     pub history: [[[AtomicI32; 64]; 64]; 2],
     pub cont_history: [[AtomicI32; 64]; 64],
     pub counter_moves: [[[AtomicU32; 64]; 64]; 2],
@@ -19,7 +18,6 @@ pub struct SharedHistory {
 
 impl SharedHistory {
     pub fn new() -> Self {
-        let killers = std::array::from_fn(|_| [AtomicU32::new(0), AtomicU32::new(0)]);
         let history = std::array::from_fn(|_| {
             std::array::from_fn(|_| std::array::from_fn(|_| AtomicI32::new(0)))
         });
@@ -32,7 +30,6 @@ impl SharedHistory {
         });
 
         Self {
-            killers,
             history,
             cont_history,
             counter_moves,
@@ -41,10 +38,6 @@ impl SharedHistory {
     }
 
     pub fn clear(&self) {
-        for i in 0..MAX_PLY {
-            self.killers[i][0].store(0, Ordering::Relaxed);
-            self.killers[i][1].store(0, Ordering::Relaxed);
-        }
         for c in 0..2 {
             for i in 0..64 {
                 for j in 0..64 {
@@ -77,20 +70,6 @@ impl SharedHistory {
                 let c = self.cont_history[i][j].load(Ordering::Relaxed);
                 self.cont_history[i][j].store(c / 2, Ordering::Relaxed);
             }
-        }
-    }
-
-    pub fn get_killer(&self, ply: usize, slot: usize) -> Option<Move> {
-        let val = self.killers[ply][slot].load(Ordering::Relaxed);
-        crate::transposition::unpack_move(val as u16)
-    }
-
-    pub fn update_killer(&self, ply: usize, m: Move) {
-        let val = crate::transposition::pack_move(Some(m)) as u32;
-        let k0 = self.killers[ply][0].load(Ordering::Relaxed);
-        if k0 != val {
-            self.killers[ply][1].store(k0, Ordering::Relaxed);
-            self.killers[ply][0].store(val, Ordering::Relaxed);
         }
     }
 
@@ -283,16 +262,20 @@ impl<'a> StagedMovePicker<'a> {
                             if Some(m) == self.tt_move {
                                 continue;
                             }
-                            let is_cap = board.color_on(m.to).is_some()
-                                || (board.piece_on(m.from) == Some(Piece::Pawn)
-                                    && m.from.file() != m.to.file()
-                                    && board.color_on(m.to).is_none());
+                            let is_ep = board.piece_on(m.from) == Some(Piece::Pawn)
+                                && m.from.file() != m.to.file()
+                                && board.color_on(m.to).is_none();
+                            let is_cap = board.color_on(m.to).is_some() || is_ep;
                             let is_promo = m.promotion.is_some();
                             if is_cap || is_promo {
-                                let victim_val = board
-                                    .piece_on(m.to)
-                                    .map(crate::eval::piece_value)
-                                    .unwrap_or(0);
+                                let victim_val = if is_ep {
+                                    crate::eval::piece_value(Piece::Pawn)
+                                } else {
+                                    board
+                                        .piece_on(m.to)
+                                        .map(crate::eval::piece_value)
+                                        .unwrap_or(0)
+                                };
                                 let attacker_val = board
                                     .piece_on(m.from)
                                     .map(crate::eval::piece_value)
@@ -499,6 +482,7 @@ pub struct SearchInfo {
     pub is_pondering: Arc<AtomicBool>,
     pub time_limit_ms: Arc<AtomicU64>,
     pub was_pondering: bool,
+    pub killers: [[Option<Move>; 2]; MAX_PLY],
 }
 
 impl SearchInfo {
@@ -524,6 +508,26 @@ impl SearchInfo {
             is_pondering,
             time_limit_ms,
             was_pondering: false,
+            killers: [[None; 2]; MAX_PLY],
+        }
+    }
+
+    #[inline(always)]
+    pub fn get_killer(&self, ply: usize, slot: usize) -> Option<Move> {
+        if ply < MAX_PLY && slot < 2 {
+            self.killers[ply][slot]
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub fn update_killer(&mut self, ply: usize, m: Move) {
+        if ply < MAX_PLY {
+            if self.killers[ply][0] != Some(m) {
+                self.killers[ply][1] = self.killers[ply][0];
+                self.killers[ply][0] = Some(m);
+            }
         }
     }
 
@@ -540,7 +544,7 @@ impl SearchInfo {
             if !currently_pondering && self.was_pondering {
                 self.start_time = Instant::now();
                 let sl = if self.time_limit > Duration::from_millis(25) {
-                    self.time_limit - Duration::from_millis(15)
+                    info_safe_limit(self.time_limit)
                 } else {
                     (self.time_limit * 8) / 10
                 };
@@ -559,5 +563,14 @@ impl SearchInfo {
                 }
             }
         }
+    }
+}
+
+#[inline(always)]
+fn info_safe_limit(time_limit: Duration) -> Duration {
+    if time_limit > Duration::from_millis(25) {
+        time_limit - Duration::from_millis(15)
+    } else {
+        (time_limit * 8) / 10
     }
 }
