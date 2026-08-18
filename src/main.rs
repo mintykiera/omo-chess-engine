@@ -27,9 +27,16 @@ fn main() {
     let mut num_threads = 1;
     let mut game_history: Vec<u64> = Vec::new();
 
-    let nnue_path = uci::get_nnue_path();
-    let network =
-        Arc::new(Network::from_file(nnue_path.to_str().unwrap()).expect("Failed to load omo.nnue"));
+    let small_nnue_path = uci::get_small_nnue_path();
+    let small_net = Arc::new(
+        Network::from_file(small_nnue_path.to_str().unwrap())
+            .expect("Failed to load omo_small.nnue"),
+    );
+
+    let big_nnue_path = uci::get_big_nnue_path();
+    let big_net = Arc::new(
+        Network::from_file(big_nnue_path.to_str().unwrap()).expect("Failed to load omo_big.nnue"),
+    );
 
     let mem_path = get_memory_path();
     if mem_path.exists() {
@@ -207,7 +214,8 @@ fn main() {
                     let sf_clone = Arc::clone(&stop_flag);
                     let ip_clone = Arc::clone(&is_pondering);
                     let tl_clone = Arc::clone(&time_limit_ms);
-                    let net_clone = Arc::clone(&network);
+                    let small_net_clone = Arc::clone(&small_net);
+                    let big_net_clone = Arc::clone(&big_net);
                     let mut history_clone = game_history.clone();
                     let book_clone = Arc::clone(&opening_book);
                     let syzygy_clone = Arc::clone(&syzygy);
@@ -225,7 +233,8 @@ fn main() {
                             tl_clone,
                             i == 0,
                             i,
-                            &net_clone,
+                            &small_net_clone,
+                            &big_net_clone,
                             &mut history_clone,
                             &book_clone,
                             &syzygy_clone,
@@ -330,7 +339,7 @@ fn main() {
             }
             "tactics" => {
                 handle.stop_and_join();
-                uci::tactics::run_tactics(&tt, &network);
+                uci::tactics::run_tactics(&tt, &small_net, &big_net);
             }
             "savememory" => {
                 let mem_path = get_memory_path();

@@ -3,15 +3,26 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 
-pub(crate) fn get_nnue_path() -> std::path::PathBuf {
+pub(crate) fn get_small_nnue_path() -> PathBuf {
     if let Ok(mut path) = std::env::current_exe() {
         path.pop();
-        path.push("omo.nnue");
+        path.push("omo_small.nnue");
         if path.exists() {
             return path;
         }
     }
-    std::path::PathBuf::from("omo.nnue")
+    PathBuf::from("omo_small.nnue")
+}
+
+pub(crate) fn get_big_nnue_path() -> PathBuf {
+    if let Ok(mut path) = std::env::current_exe() {
+        path.pop();
+        path.push("omo_big.nnue");
+        if path.exists() {
+            return path;
+        }
+    }
+    PathBuf::from("omo_big.nnue")
 }
 
 pub(crate) fn get_memory_path() -> PathBuf {

@@ -8,7 +8,7 @@ use std::time::Duration;
 use super::move_fmt::format_uci_move;
 use crate::transposition::TranspositionTable;
 
-pub(crate) fn run_tactics(tt: &TranspositionTable, network: &Network) {
+pub(crate) fn run_tactics(tt: &TranspositionTable, small_net: &Network, big_net: &Network) {
     let positions = vec![
         ("M1 Back Rank", "6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1", "e1e8"),
         (
@@ -51,7 +51,8 @@ pub(crate) fn run_tactics(tt: &TranspositionTable, network: &Network) {
             time_limit_ms,
             true,
             0,
-            network,
+            small_net,
+            big_net,
             &mut hist,
             &no_book,
             &None,
