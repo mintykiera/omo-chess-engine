@@ -476,6 +476,7 @@ pub struct SearchInfo {
     pub time_limit_ms: Arc<AtomicU64>,
     pub was_pondering: bool,
     pub killers: [[Option<Move>; 2]; MAX_PLY],
+    pub eval_stack: [i32; MAX_PLY],
 }
 
 impl SearchInfo {
@@ -502,6 +503,7 @@ impl SearchInfo {
             time_limit_ms,
             was_pondering: false,
             killers: [[None; 2]; MAX_PLY],
+            eval_stack: [0; MAX_PLY],
         }
     }
 
@@ -521,6 +523,22 @@ impl SearchInfo {
                 self.killers[ply][1] = self.killers[ply][0];
                 self.killers[ply][0] = Some(m);
             }
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_eval(&mut self, ply: usize, eval: i32) {
+        if ply < MAX_PLY {
+            self.eval_stack[ply] = eval;
+        }
+    }
+
+    #[inline(always)]
+    pub fn get_eval(&self, ply: usize) -> i32 {
+        if ply < MAX_PLY {
+            self.eval_stack[ply]
+        } else {
+            0
         }
     }
 

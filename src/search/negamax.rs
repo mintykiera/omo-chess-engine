@@ -212,14 +212,42 @@ pub(crate) fn negamax(
         (depth, extensions)
     };
 
-    let static_eval = if !in_check {
+    let mut static_eval = if !in_check {
         network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move())
     } else {
         -MATE_SCORE
     };
 
-    if !in_check && ply > 0 && depth <= 3 && excluded_move.is_none() {
-        if static_eval - 120 * depth >= beta {
+    // TT static eval refinement (skip mate scores to prevent RFP/NMP distortion)
+    if !in_check {
+        if let Some(entry) = tt_entry {
+            let tt_score = score_from_tt(entry.score, ply);
+            if tt_score.abs() < MATE_THRESHOLD {
+                match entry.node_type {
+                    NodeType::Exact => static_eval = tt_score,
+                    NodeType::LowerBound if tt_score > static_eval => static_eval = tt_score,
+                    NodeType::UpperBound if tt_score < static_eval => static_eval = tt_score,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Store eval for improving heuristic
+    let ply_idx_eval = ply as usize;
+    info.set_eval(ply_idx_eval, static_eval);
+
+    let prev_eval = if ply >= 2 {
+        info.get_eval((ply - 2) as usize)
+    } else {
+        -MATE_SCORE
+    };
+    let improving = !in_check && ply >= 2 && prev_eval > -MATE_THRESHOLD && static_eval > prev_eval;
+
+    // Reverse futility pruning — extended to depth <= 7 with improving-aware margin
+    let rfp_margin = if improving { 60 } else { 80 };
+    if !in_check && ply > 0 && depth <= 7 && excluded_move.is_none() {
+        if static_eval - rfp_margin * depth >= beta {
             return SearchResult::new(beta, None, false);
         }
     }
@@ -238,7 +266,7 @@ pub(crate) fn negamax(
             & board.colors(board.side_to_move());
         if our_pieces.len() > 0 {
             if let Some(null_board) = board.null_move() {
-                let r = 3 + depth / 6;
+                let r = 3 + depth / 3 + ((static_eval - beta) / 200).clamp(0, 3);
                 history_hashes.push(hash);
                 let res = negamax(
                     &null_board,
@@ -401,6 +429,11 @@ pub(crate) fn negamax(
             continue;
         }
 
+        // SEE pruning for quiet moves
+        if !in_check && is_quiet && depth <= 6 && move_index > 0 && see(board, m) < -depth * 80 {
+            continue;
+        }
+
         let mut next_board = board.clone();
         next_board.play_unchecked(m);
 
@@ -468,7 +501,8 @@ pub(crate) fn negamax(
                 let r = lmr_reduction(depth, move_index as i32);
                 let history_score = shared.get_history(board.side_to_move(), m.from, m.to);
                 let history_adjustment = history_score / 4096;
-                let final_r = (r - history_adjustment).max(0);
+                let improving_adj = if improving { 1 } else { 0 };
+                let final_r = (r - history_adjustment - improving_adj).max(0);
                 reduced_depth = (depth - 1 + singular_ext - final_r).max(1);
             }
 
@@ -533,7 +567,7 @@ pub(crate) fn negamax(
         }
         if alpha >= beta {
             let color = board.side_to_move();
-            let bonus = (depth * depth * 16).min(300);
+            let bonus = (depth * 32).min(1800);
 
             if is_quiet {
                 if ply_idx < MAX_PLY {
