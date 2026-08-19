@@ -2,27 +2,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
+use std::time::SystemTime;
 
-pub(crate) fn get_small_nnue_path() -> PathBuf {
+pub(crate) fn get_nnue_path() -> PathBuf {
     if let Ok(mut path) = std::env::current_exe() {
         path.pop();
-        path.push("omo_small.nnue");
+        path.push("omo.nnue");
         if path.exists() {
             return path;
         }
     }
-    PathBuf::from("omo_small.nnue")
-}
-
-pub(crate) fn get_big_nnue_path() -> PathBuf {
-    if let Ok(mut path) = std::env::current_exe() {
-        path.pop();
-        path.push("omo_big.nnue");
-        if path.exists() {
-            return path;
-        }
-    }
-    PathBuf::from("omo_big.nnue")
+    PathBuf::from("omo.nnue")
 }
 
 pub(crate) fn get_memory_path() -> PathBuf {
@@ -33,6 +23,26 @@ pub(crate) fn get_memory_path() -> PathBuf {
     } else {
         PathBuf::from("omo_memory.bin")
     }
+}
+
+pub(crate) fn get_nnue_sig_path() -> PathBuf {
+    if let Ok(mut path) = std::env::current_exe() {
+        path.pop();
+        path.push("omo_memory.sig");
+        path
+    } else {
+        PathBuf::from("omo_memory.sig")
+    }
+}
+
+pub(crate) fn nnue_fingerprint(nnue_path: &std::path::Path) -> Option<String> {
+    let meta = std::fs::metadata(nnue_path).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?;
+    Some(format!("{}:{}", meta.len(), modified.as_secs()))
 }
 
 pub(crate) fn get_book_path() -> PathBuf {

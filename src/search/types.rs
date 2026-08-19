@@ -321,15 +321,12 @@ impl<'a> StagedMovePicker<'a> {
                             .map(crate::eval::piece_value)
                             .unwrap_or(100);
 
-                        // Optimization: if victim > attacker, it's immediately good
                         if victim_val > attacker_val || crate::search::see::see(board, m) >= 0 {
                             return Some((m, idx));
                         } else {
-                            // Bad capture, push to bad_captures for later
                             self.bad_captures.push(m);
                             let bc_idx = self.bad_captures.len - 1;
                             self.bad_capture_scores[bc_idx] = best_score;
-                            // continue loop to find next best capture
                         }
                     } else {
                         self.stage = Stage::Killers;
@@ -341,9 +338,7 @@ impl<'a> StagedMovePicker<'a> {
                         let km = self.killers[self.current_index];
                         self.current_index += 1;
                         if let Some(km) = km {
-                            // Deduplicate against TT move
                             if Some(km) != self.tt_move {
-                                // Deduplicate Killer 2 against Killer 1
                                 if self.current_index == 2 && self.killers[0] == Some(km) {
                                     continue;
                                 }
@@ -355,7 +350,6 @@ impl<'a> StagedMovePicker<'a> {
                                             && km.from.file() != km.to.file()
                                             && board.color_on(km.to).is_none());
                                     let is_promo = km.promotion.is_some();
-                                    // Ensure it's a quiet pseudo-legal move
                                     if !is_cap && !is_promo {
                                         return Some((km, idx));
                                     }
@@ -447,7 +441,6 @@ impl<'a> StagedMovePicker<'a> {
                     if let Some(bc_idx) = best_bc_idx {
                         self.bad_capture_scores[bc_idx] = i32::MIN;
                         let m = self.bad_captures.moves[bc_idx];
-                        // Need to find original index in stack
                         if let Some(idx) = self.stack.as_slice().iter().position(|&sm| sm == m) {
                             return Some((m, idx));
                         }

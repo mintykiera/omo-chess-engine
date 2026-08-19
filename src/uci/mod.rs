@@ -6,7 +6,8 @@ pub mod tactics;
 pub mod time;
 
 pub(crate) use handle::{
-    SearchHandle, get_big_nnue_path, get_book_path, get_memory_path, get_small_nnue_path,
+    SearchHandle, get_book_path, get_memory_path, get_nnue_path, get_nnue_sig_path,
+    nnue_fingerprint,
 };
 pub use move_fmt::{format_uci_move, parse_uci_move};
 pub use syzygy::load_syzygy;

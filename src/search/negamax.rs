@@ -29,23 +29,6 @@ impl SearchResult {
     }
 }
 
-#[inline(always)]
-fn evaluate_dual_network(
-    board: &Board,
-    small_net: &Network,
-    big_net: &Network,
-    small_acc: &Accumulator,
-) -> i32 {
-    let side = crate::eval::OmoBoard(board).side_to_move();
-    let score = small_net.evaluate_accumulator(small_acc, side);
-    if score.abs() >= 200 {
-        score
-    } else {
-        let lazy_big_acc = big_net.accumulator(&crate::eval::OmoBoard(board));
-        big_net.evaluate_accumulator(&lazy_big_acc, side)
-    }
-}
-
 pub(crate) fn negamax(
     board: &Board,
     depth: i32,
@@ -58,9 +41,8 @@ pub(crate) fn negamax(
     shared: &SharedHistory,
     history_hashes: &mut Vec<u64>,
     prev_move: Option<Move>,
-    small_net: &Network,
-    big_net: &Network,
-    small_acc: &Accumulator,
+    network: &Network,
+    acc: &Accumulator,
     syzygy: &Option<Tablebase<Chess>>,
     excluded_move: Option<Move>,
 ) -> SearchResult {
@@ -73,7 +55,7 @@ pub(crate) fn negamax(
 
     if ply >= (MAX_PLY as i32) - 1 {
         return SearchResult::new(
-            evaluate_dual_network(board, small_net, big_net, small_acc),
+            network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move()),
             None,
             false,
         );
@@ -216,7 +198,7 @@ pub(crate) fn negamax(
 
     if depth <= 0 {
         return SearchResult::new(
-            quiescence_search(board, alpha, beta, info, small_net, big_net, small_acc),
+            quiescence_search(board, alpha, beta, info, network, acc),
             None,
             false,
         );
@@ -231,7 +213,7 @@ pub(crate) fn negamax(
     };
 
     let static_eval = if !in_check {
-        evaluate_dual_network(board, small_net, big_net, small_acc)
+        network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move())
     } else {
         -MATE_SCORE
     };
@@ -270,9 +252,8 @@ pub(crate) fn negamax(
                     shared,
                     history_hashes,
                     None,
-                    small_net,
-                    big_net,
-                    small_acc,
+                    network,
+                    acc,
                     syzygy,
                     None,
                 );
@@ -317,9 +298,8 @@ pub(crate) fn negamax(
                         shared,
                         history_hashes,
                         prev_move,
-                        small_net,
-                        big_net,
-                        small_acc,
+                        network,
+                        acc,
                         syzygy,
                         Some(tt_m),
                     );
@@ -354,16 +334,14 @@ pub(crate) fn negamax(
             shared,
             history_hashes,
             prev_move,
-            small_net,
-            big_net,
-            small_acc,
+            network,
+            acc,
             syzygy,
             None,
         );
         if info.aborted {
             return SearchResult::new(0, None, false);
         }
-        // Update the TT move with the result of the shallow search
         tt_move = tt.get(hash).and_then(|e| e.best_move);
     }
 
@@ -437,12 +415,12 @@ pub(crate) fn negamax(
             searched_quiets.push(m);
         }
 
-        let mut child_small_acc = small_net.empty_accumulator();
-        small_net.update(
+        let mut child_acc = network.empty_accumulator();
+        network.update(
             &crate::eval::OmoBoard(board),
             &crate::eval::OmoBoard(&next_board),
-            small_acc,
-            &mut child_small_acc,
+            acc,
+            &mut child_acc,
         );
 
         let singular_ext = if is_singular && Some(m) == singular_move && extensions < MAX_EXTENSIONS
@@ -469,9 +447,8 @@ pub(crate) fn negamax(
                 shared,
                 history_hashes,
                 Some(m),
-                small_net,
-                big_net,
-                &child_small_acc,
+                network,
+                &child_acc,
                 syzygy,
                 None,
             );
@@ -508,9 +485,8 @@ pub(crate) fn negamax(
                 shared,
                 history_hashes,
                 Some(m),
-                small_net,
-                big_net,
-                &child_small_acc,
+                network,
+                &child_acc,
                 syzygy,
                 None,
             );
@@ -531,9 +507,8 @@ pub(crate) fn negamax(
                         shared,
                         history_hashes,
                         Some(m),
-                        small_net,
-                        big_net,
-                        &child_small_acc,
+                        network,
+                        &child_acc,
                         syzygy,
                         None,
                     );
@@ -623,9 +598,8 @@ pub(crate) fn quiescence_search(
     mut alpha: i32,
     beta: i32,
     info: &mut SearchInfo,
-    small_net: &Network,
-    big_net: &Network,
-    small_acc: &Accumulator,
+    network: &Network,
+    acc: &Accumulator,
 ) -> i32 {
     info.check_time();
     if info.aborted {
@@ -638,7 +612,7 @@ pub(crate) fn quiescence_search(
     let stand_pat = if in_check {
         -MATE_SCORE
     } else {
-        evaluate_dual_network(board, small_net, big_net, small_acc)
+        network.evaluate_accumulator(acc, crate::eval::OmoBoard(board).side_to_move())
     };
 
     if !in_check {
@@ -710,23 +684,15 @@ pub(crate) fn quiescence_search(
         let mut next_board = board.clone();
         next_board.play_unchecked(*m);
 
-        let mut child_small_acc = small_net.empty_accumulator();
-        small_net.update(
+        let mut child_acc = network.empty_accumulator();
+        network.update(
             &crate::eval::OmoBoard(board),
             &crate::eval::OmoBoard(&next_board),
-            small_acc,
-            &mut child_small_acc,
+            acc,
+            &mut child_acc,
         );
 
-        let score = -quiescence_search(
-            &next_board,
-            -beta,
-            -alpha,
-            info,
-            small_net,
-            big_net,
-            &child_small_acc,
-        );
+        let score = -quiescence_search(&next_board, -beta, -alpha, info, network, &child_acc);
 
         if info.aborted {
             return 0;

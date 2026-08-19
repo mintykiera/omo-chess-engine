@@ -33,8 +33,7 @@ pub fn get_best_move(
     time_limit_ms: Arc<AtomicU64>,
     is_main_thread: bool,
     thread_id: usize,
-    small_net: &Network,
-    big_net: &Network,
+    network: &Network,
     history_hashes: &mut Vec<u64>,
     opening_book: &Option<PolyglotBook>,
     syzygy: &Option<Tablebase<Chess>>,
@@ -75,7 +74,7 @@ pub fn get_best_move(
     let mut best_move: Option<Move> = None;
     let mut best_score = 0i32;
     let mut total_nodes: u64 = 0;
-    let root_small_acc = small_net.accumulator(&crate::eval::OmoBoard(board));
+    let root_acc = network.accumulator(&crate::eval::OmoBoard(board));
 
     if let Some(tb) = syzygy {
         let piece_count =
@@ -202,9 +201,8 @@ pub fn get_best_move(
                 shared,
                 history_hashes,
                 None,
-                small_net,
-                big_net,
-                &root_small_acc,
+                network,
+                &root_acc,
                 syzygy,
                 None,
             );
